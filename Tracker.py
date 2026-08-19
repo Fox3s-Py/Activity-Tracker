@@ -55,7 +55,11 @@ def is_ignored(process_name: str, window_title: str) -> bool:
 # --- WinAPI константы ---
 
 EVENT_SYSTEM_FOREGROUND = 0x0003
+EVENT_OBJECT_NAMECHANGE = 0x800C   # смена заголовка объекта (в т.ч. переключение вкладок в браузере)
 WINEVENT_OUTOFCONTEXT = 0x0000
+
+OBJID_WINDOW = 0        # событие относится к самому окну, а не к его дочерним контролам
+CHILDID_SELF = 0
 
 user32 = ctypes.windll.user32
 
@@ -74,6 +78,8 @@ WinEventProcType = ctypes.WINFUNCTYPE(
 
 current_window: tuple[str, str] | None = None
 current_started_at: datetime | None = None
+current_hwnd: int | None = None   # хэндл активного окна — нужен, чтобы фильтровать NAMECHANGE
+                                    # только по нему, а не по фоновым окнам
 
 
 def init_db() -> None:
@@ -134,9 +140,27 @@ def append_event(started_at: datetime, ended_at: datetime, process_name: str, wi
         conn.commit()
 
 
-def on_foreground_changed(hWinEventHook, event, hwnd, idObject, idChild, idEventThread, dwmsEventTime):
-    """Колбэк на смену активного окна: закрывает старый интервал, открывает новый."""
-    global current_window, current_started_at
+def on_window_event(hWinEventHook, event, hwnd, idObject, idChild, idEventThread, dwmsEventTime):
+    """
+    Общий колбэк на два типа событий:
+      - EVENT_SYSTEM_FOREGROUND — сменилось активное окно (переключение между приложениями)
+      - EVENT_OBJECT_NAMECHANGE — сменился заголовок текущего активного окна
+        (например, переключение вкладки в браузере — hwnd тот же, меняется только title)
+    В обоих случаях закрывает старый интервал и открывает новый.
+    """
+    global current_window, current_started_at, current_hwnd
+
+    if event == EVENT_SYSTEM_FOREGROUND:
+        current_hwnd = hwnd
+    elif event == EVENT_OBJECT_NAMECHANGE:
+        # NAMECHANGE стреляет для кучи разных объектов (не только окон) —
+        # нас интересует только сам объект окна, и только если это текущее активное окно
+        if idObject != OBJID_WINDOW or idChild != CHILDID_SELF:
+            return
+        if hwnd != current_hwnd:
+            return
+    else:
+        return
 
     window = get_window_info(hwnd)
     now = datetime.now()
@@ -165,17 +189,18 @@ def on_foreground_changed(hWinEventHook, event, hwnd, idObject, idChild, idEvent
 
 
 def run() -> None:
-    global current_window, current_started_at
+    global current_window, current_started_at, current_hwnd
 
     init_db()
 
-    hwnd = win32gui.GetForegroundWindow()
-    current_window = get_window_info(hwnd)
+    current_hwnd = win32gui.GetForegroundWindow()
+    current_window = get_window_info(current_hwnd)
     current_started_at = datetime.now()
 
-    callback = WinEventProcType(on_foreground_changed)
+    callback = WinEventProcType(on_window_event)
 
-    hook = user32.SetWinEventHook(
+    # Хук №1: смена активного окна (переключение между приложениями)
+    hook_foreground = user32.SetWinEventHook(
         EVENT_SYSTEM_FOREGROUND,
         EVENT_SYSTEM_FOREGROUND,
         0,
@@ -185,10 +210,21 @@ def run() -> None:
         WINEVENT_OUTOFCONTEXT,
     )
 
-    if not hook:
-        raise RuntimeError("Не удалось установить хук SetWinEventHook")
+    # Хук №2: смена заголовка текущего окна (переключение вкладок в браузере и т.п.)
+    hook_namechange = user32.SetWinEventHook(
+        EVENT_OBJECT_NAMECHANGE,
+        EVENT_OBJECT_NAMECHANGE,
+        0,
+        callback,
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT,
+    )
 
-    print(f"Трекер запущен (event-driven). База: {DB_FILE.resolve()}")
+    if not hook_foreground or not hook_namechange:
+        raise RuntimeError("Не удалось установить SetWinEventHook")
+
+    print(f"Трекер запущен (event-driven, с трекингом вкладок). База: {DB_FILE.resolve()}")
     print("Останови через Ctrl+C.")
 
     try:
@@ -196,7 +232,8 @@ def run() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        user32.UnhookWinEvent(hook)
+        user32.UnhookWinEvent(hook_foreground)
+        user32.UnhookWinEvent(hook_namechange)
         if current_window is not None and current_started_at is not None:
             process_name, window_title = current_window
             append_event(current_started_at, datetime.now(), process_name, window_title)
