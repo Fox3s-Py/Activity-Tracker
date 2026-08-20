@@ -229,6 +229,7 @@ def get_window_info(hwnd: int) -> tuple[str, str] | None:
         return None
 
     window_title = win32gui.GetWindowText(hwnd)
+    window_title = window_title.replace("\x00", "")  # защита от NUL-байтов из WinAPI
 
     try:
         pid = wintypes.DWORD()
