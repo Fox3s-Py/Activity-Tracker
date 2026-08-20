@@ -18,3 +18,4 @@ class Activity(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     ended_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
