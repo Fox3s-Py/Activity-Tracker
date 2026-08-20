@@ -10,10 +10,10 @@ from sqlalchemy import pool
 
 from alembic import context
 
-# чтобы Alembic видел models.py, даже если команду запускают не из корня проекта
+# чтобы Alembic видел пакет app/, даже если команду запускают не из корня backend/
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from models import Base  # noqa: E402
+from app.models import Base  # noqa: E402
 
 load_dotenv()
 # this is the Alembic Config object, which provides
