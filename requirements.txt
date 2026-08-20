@@ -1,0 +1,12 @@
+# Backend
+fastapi
+uvicorn
+sqlalchemy
+alembic
+psycopg2-binary
+python-dotenv
+pydantic
+
+# Клиент (Windows)
+psutil
+pywin32
