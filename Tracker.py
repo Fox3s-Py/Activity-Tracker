@@ -35,7 +35,7 @@ import win32gui
 # --- Конфиг ---
 
 API_URL = "http://127.0.0.1:8000/activities/batch"
-SEND_INTERVAL_SECONDS = 30  # как часто пытаться отправить накопленное
+SEND_INTERVAL_SECONDS = 300  # как часто пытаться отправить накопленное
 REQUEST_TIMEOUT_SECONDS = 5
 
 PENDING_DB_FILE = Path("pending_events.db")  # локальная очередь неотправленного
