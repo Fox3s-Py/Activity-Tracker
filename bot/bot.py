@@ -44,10 +44,12 @@ chat_history: dict[int, list[int]] = defaultdict(list)
 
 
 def format_duration(total_seconds: float) -> str:
-    """Секунды -> 'Xч Yм'."""
-    hours = int(total_seconds // 3600)
-    minutes = int((total_seconds % 3600) // 60)
-    return f"{hours}ч {minutes}м"
+    """Секунды -> 'Xч Yм Zс'."""
+    total = int(total_seconds)
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    seconds = total % 60
+    return f"{hours}ч {minutes}м {seconds}с"
 
 
 def safe_callback_data(prefix: str, *parts: str, max_length: int = 60) -> str:
