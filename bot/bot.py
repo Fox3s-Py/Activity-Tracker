@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import requests
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramNetworkError, TelegramBadRequest
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -37,10 +37,36 @@ main_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+# Код периода, который "путешествует" вместе с кнопками через все уровни
+# drill-down (callback_data) — чтобы детализация внутри Chrome/Telegram
+# считалась за тот же диапазон дат, что и верхнеуровневая статистика,
+# а не всегда "за сегодня" по умолчанию.
+PERIOD_TODAY = "t"
+PERIOD_YESTERDAY = "y"
+PERIOD_WEEK = "w"
+
+PERIOD_LABELS = {
+    PERIOD_TODAY: "сегодня",
+    PERIOD_YESTERDAY: "вчера",
+    PERIOD_WEEK: "за неделю",
+}
+
 # id сообщений бота в текущей "сессии" просмотра статистики, по чатам —
 # чистим их при следующем нажатии на кнопку выбора периода.
-# In-memory: сбрасывается при перезапуске бота — это ок для одного пользователя.
 chat_history: dict[int, list[int]] = defaultdict(list)
+
+
+def period_date_range(period_code: str) -> tuple[date, date]:
+    """По короткому коду периода — диапазон дат для запроса к API."""
+    today = date.today()
+    if period_code == PERIOD_YESTERDAY:
+        d = today - timedelta(days=1)
+        return d, d
+    if period_code == PERIOD_WEEK:
+        week_start = today - timedelta(days=today.weekday())
+        week_end = week_start + timedelta(days=6)
+        return week_start, week_end
+    return today, today  # по умолчанию — сегодня
 
 
 def format_duration(total_seconds: float) -> str:
@@ -52,10 +78,11 @@ def format_duration(total_seconds: float) -> str:
     return f"{hours}ч {minutes}м {seconds}с"
 
 
-def safe_callback_data(prefix: str, *parts: str, max_length: int = 60) -> str:
+def safe_callback_data(prefix: str, *parts: str, max_length: int = 64) -> str:
     """
     Собирает callback_data из частей через ':' и обрезает при необходимости,
-    чтобы влезть в лимит Telegram (64 байта). Обрезается последняя часть.
+    чтобы влезть в реальный лимит Telegram (64 байта). Обрезается последняя
+    часть, по одному символу за раз — чтобы не срезать больше нужного.
     """
     data = ":".join([prefix, *parts])
     if len(data.encode("utf-8")) <= max_length:
@@ -63,7 +90,7 @@ def safe_callback_data(prefix: str, *parts: str, max_length: int = 60) -> str:
 
     *head, last = parts
     while last and len(data.encode("utf-8")) > max_length:
-        last = last[:-5]
+        last = last[:-1]
         data = ":".join([prefix, *head, last])
     return data
 
@@ -115,8 +142,8 @@ async def start_handler(message: Message):
     )
 
 
-async def send_daily_stats(message: Message, target_date: date, label: str) -> None:
-    """Общая логика для кнопок 'сегодня'/'вчера' — просто разная дата на входе."""
+async def send_daily_stats(message: Message, target_date: date, label: str, period_code: str) -> None:
+    """Общая логика для кнопок 'сегодня'/'вчера' — просто разная дата и код периода на входе."""
     chat_id = message.chat.id
     await clear_chat_history(chat_id)
 
@@ -143,7 +170,10 @@ async def send_daily_stats(message: Message, target_date: date, label: str) -> N
     builder = InlineKeyboardBuilder()
     for item in stats[:10]:
         button_text = f"{item['process_name']} — {format_duration(item['total_seconds'])}"
-        builder.button(text=button_text, callback_data=safe_callback_data("breakdown", item["process_name"]))
+        builder.button(
+            text=button_text,
+            callback_data=safe_callback_data("breakdown", period_code, item["process_name"]),
+        )
     builder.adjust(1)
 
     sent = await safe_answer(message, f"{label} ({data['date']}):", reply_markup=builder.as_markup())
@@ -173,7 +203,10 @@ async def send_weekly_stats(message: Message) -> None:
     builder = InlineKeyboardBuilder()
     for item in stats[:10]:
         button_text = f"{item['process_name']} — {format_duration(item['total_seconds'])}"
-        builder.button(text=button_text, callback_data=safe_callback_data("breakdown", item["process_name"]))
+        builder.button(
+            text=button_text,
+            callback_data=safe_callback_data("breakdown", PERIOD_WEEK, item["process_name"]),
+        )
     builder.adjust(1)
 
     label = f"🗓 Статистика за неделю ({data['week_start']} — {data['week_end']}):"
@@ -183,12 +216,17 @@ async def send_weekly_stats(message: Message) -> None:
 
 @dp.message(F.text == BTN_TODAY)
 async def today_handler(message: Message):
-    await send_daily_stats(message, date.today(), "📊 Статистика за сегодня")
+    await send_daily_stats(message, date.today(), "📊 Статистика за сегодня", PERIOD_TODAY)
 
 
 @dp.message(F.text == BTN_YESTERDAY)
 async def yesterday_handler(message: Message):
-    await send_daily_stats(message, date.today() - timedelta(days=1), "📅 Статистика за вчера")
+    await send_daily_stats(
+        message,
+        date.today() - timedelta(days=1),
+        "📅 Статистика за вчера",
+        PERIOD_YESTERDAY,
+    )
 
 
 @dp.message(F.text == BTN_WEEK)
@@ -198,13 +236,18 @@ async def week_handler(message: Message):
 
 @dp.callback_query(F.data.startswith("breakdown:"))
 async def breakdown_handler(callback: CallbackQuery):
-    process_name = callback.data.split(":", 1)[1]  # type: ignore
+    _, period_code, process_name = callback.data.split(":", 2)  # type: ignore
     chat_id = callback.message.chat.id  # type: ignore
+    date_from, date_to = period_date_range(period_code)
 
     try:
         response = requests.get(
             f"{API_URL}/stats/daily/breakdown",
-            params={"process_name": process_name},
+            params={
+                "process_name": process_name,
+                "date_from": str(date_from),
+                "date_to": str(date_to),
+            },
             timeout=5,
         )
         response.raise_for_status()
@@ -222,12 +265,16 @@ async def breakdown_handler(callback: CallbackQuery):
     builder = InlineKeyboardBuilder()
     for item in breakdown[:10]:
         button_text = f"{item['name']} — {format_duration(item['total_seconds'])}"
-        builder.button(text=button_text, callback_data=safe_callback_data("title", process_name, item["name"]))
+        builder.button(
+            text=button_text,
+            callback_data=safe_callback_data("title", period_code, process_name, item["name"]),
+        )
     builder.adjust(1)
 
+    period_label = PERIOD_LABELS.get(period_code, "")
     sent = await safe_answer(
         callback.message,  # type: ignore
-        f"🔍 {process_name} — детализация по сайтам:",
+        f"🔍 {process_name} — детализация по сайтам ({period_label}):",
         reply_markup=builder.as_markup(),
     )
     await track(chat_id, sent)
@@ -236,13 +283,19 @@ async def breakdown_handler(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("title:"))
 async def title_handler(callback: CallbackQuery):
-    _, process_name, site = callback.data.split(":", 2)  # type: ignore
+    _, period_code, process_name, site = callback.data.split(":", 3)  # type: ignore
     chat_id = callback.message.chat.id  # type: ignore
+    date_from, date_to = period_date_range(period_code)
 
     try:
         response = requests.get(
             f"{API_URL}/stats/daily/breakdown",
-            params={"process_name": process_name, "site": site},
+            params={
+                "process_name": process_name,
+                "site": site,
+                "date_from": str(date_from),
+                "date_to": str(date_to),
+            },
             timeout=5,
         )
         response.raise_for_status()
@@ -257,7 +310,8 @@ async def title_handler(callback: CallbackQuery):
         await callback.answer("Нет данных.", show_alert=True)
         return
 
-    lines = [f"📄 {site} — конкретные страницы:\n"]
+    period_label = PERIOD_LABELS.get(period_code, "")
+    lines = [f"📄 {site} — конкретные страницы ({period_label}):\n"]
     for item in breakdown[:10]:
         lines.append(f"{item['name']} — {format_duration(item['total_seconds'])}")
 
