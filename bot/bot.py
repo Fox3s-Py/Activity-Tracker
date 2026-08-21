@@ -321,8 +321,19 @@ async def title_handler(callback: CallbackQuery):
 
 
 async def main():
-    await dp.start_polling(bot)
+    print("Бот запущен. Останови через Ctrl+C.")
+    try:
+        await dp.start_polling(bot)
+    finally:
+        # закрываем сетевую сессию явно — иначе aiohttp иногда ругается
+        # предупреждением про "unclosed client session" при выходе
+        await bot.session.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("Бот остановлен.")

@@ -16,11 +16,12 @@ WinAPI SetWinEventHook — Windows сама уведомляет о смене �
     pip install psutil pywin32 requests
 
 Запуск:
-    python tracker_event.py
-    (останавливается через Ctrl+C)
+    python tracker.py
+    (останавливается командой 'stop' в консоли, НЕ через Ctrl+C — см. ignore_sigint)
 """
 
 import ctypes
+import signal
 import sqlite3
 import threading
 import time
@@ -73,6 +74,7 @@ OBJID_WINDOW = 0
 CHILDID_SELF = 0
 
 user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
 
 WinEventProcType = ctypes.WINFUNCTYPE(
     None,
@@ -299,6 +301,37 @@ def on_window_event(hWinEventHook, event, hwnd, idObject, idChild, idEventThread
     current_started_at = now
 
 
+# --- Штатная остановка (без KeyboardInterrupt/Ctrl+C) ---
+
+WM_QUIT = 0x0012
+
+
+def stdin_listener(main_thread_id: int) -> None:
+    """
+    Слушает консоль в отдельном потоке. По команде 'stop' посылает WM_QUIT
+    в основной поток — это штатный способ выйти из PumpMessages(), без
+    KeyboardInterrupt и без мусора в консоли.
+    """
+    while True:
+        try:
+            command = input().strip().lower()
+        except EOFError:
+            break
+
+        if command == "stop":
+            print("Получена команда остановки, завершаюсь...")
+            user32.PostThreadMessageW(main_thread_id, WM_QUIT, 0, 0)
+            break
+
+
+def ignore_sigint(signum, frame) -> None:
+    """Ctrl+C больше не завершает трекер — только мешает 'грязным' способом. Используй 'stop'."""
+    print("\nCtrl+C отключён. Чтобы остановить трекер, набери 'stop' и нажми Enter.")
+
+
+signal.signal(signal.SIGINT, ignore_sigint)
+
+
 def run() -> None:
     global current_window, current_started_at, current_hwnd
 
@@ -311,6 +344,11 @@ def run() -> None:
     # фоновый поток периодической отправки — не блокирует основной цикл хука
     sender_thread = threading.Thread(target=send_periodically, daemon=True)
     sender_thread.start()
+
+    # запоминаем id ОСНОВНОГО потока — именно в него нужно послать WM_QUIT
+    main_thread_id = kernel32.GetCurrentThreadId()
+    listener_thread = threading.Thread(target=stdin_listener, args=(main_thread_id,), daemon=True)
+    listener_thread.start()
 
     callback = WinEventProcType(on_window_event)
 
@@ -326,24 +364,21 @@ def run() -> None:
 
     print(f"Трекер запущен. Отправка на {API_URL} каждые {SEND_INTERVAL_SECONDS} сек.")
     print(f"Локальная очередь (на случай недоступности сервера): {PENDING_DB_FILE.resolve()}")
-    print("Останови через Ctrl+C.")
+    print("Чтобы остановить — набери 'stop' и нажми Enter.")
 
-    try:
-        win32gui.PumpMessages()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        user32.UnhookWinEvent(hook_foreground)
-        user32.UnhookWinEvent(hook_namechange)
+    win32gui.PumpMessages()  # завершится штатно, как только придёт WM_QUIT от stdin_listener
 
-        if current_window is not None and current_started_at is not None:
-            process_name, window_title = current_window
-            close_interval(process_name, window_title, current_started_at, datetime.now())
+    user32.UnhookWinEvent(hook_foreground)
+    user32.UnhookWinEvent(hook_namechange)
 
-        # финальная попытка отправить всё, что скопилось, перед выходом
-        flush_and_send()
+    if current_window is not None and current_started_at is not None:
+        process_name, window_title = current_window
+        close_interval(process_name, window_title, current_started_at, datetime.now())
 
-        print("\nОстановлено.")
+    # финальная попытка отправить всё, что скопилось, перед выходом
+    flush_and_send()
+
+    print("\nОстановлено.")
 
 
 if __name__ == "__main__":
