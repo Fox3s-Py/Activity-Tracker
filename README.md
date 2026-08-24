@@ -177,8 +177,10 @@ python bot.py
       уровни, устойчивость к сетевым сбоям Telegram
 - [x] Backend: автотесты (pytest) на эндпоинты — `/health`, `/activities/batch`
       (включая регрессию на NUL-байты), `/stats/daily`, `/stats/weekly`
-- [ ] Юнит-тесты на чистые функции (`extract_site`, `clean_telegram_title`) —
-      без БД и HTTP, на реальных edge cases из production-данных
+- [x] Backend: юнит-тесты на чистые функции (`extract_site`,
+      `clean_telegram_title`) — все найденные источники мусора + edge cases
+- [ ] CI (GitHub Actions) — автозапуск pytest при каждом пуше в репозиторий,
+      без необходимости помнить и запускать тесты руками
 - [ ] Мультипользовательский режим: `user_id`/`device_id` в `Activity`,
       конфигурируемый `API_URL` на клиенте, `uvicorn --host 0.0.0.0`,
       ролевая модель доступа (RBAC) — обычный пользователь видит в боте
