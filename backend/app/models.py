@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Float, DateTime, Integer
+from sqlalchemy import String, Float, DateTime, Integer, Boolean
 
 
 class Base(DeclarativeBase):
@@ -19,3 +19,12 @@ class Activity(Base):
     ended_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
