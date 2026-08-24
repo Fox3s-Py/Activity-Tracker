@@ -6,13 +6,14 @@
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.auth import hash_password
+from app.auth import create_access_token, hash_password, verify_password
 from app.database import get_db
 from app.models import User
-from app.schemas import UserCreate, UserOut
+from app.schemas import Token, UserCreate, UserOut
 
 # prefix — все пути внутри этого роутера автоматически начинаются с /auth,
 # не нужно писать "/auth/register" руками в каждом @router.post(...)
@@ -39,3 +40,18 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
 
     db.refresh(new_user)
     return new_user
+
+
+@router.post("/login", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == form_data.username).first()
+
+    if user is None or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверное имя пользователя или пароль",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = create_access_token(data={"sub": user.username})
+    return Token(access_token=access_token)

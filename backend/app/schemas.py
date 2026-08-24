@@ -61,3 +61,9 @@ class UserOut(BaseModel):
     id: int
     username: str
     is_admin: bool
+
+
+class Token(BaseModel):
+    """Ответ на успешный логин."""
+    access_token: str
+    token_type: str = "bearer"
