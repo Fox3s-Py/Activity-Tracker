@@ -10,7 +10,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.auth import create_access_token, hash_password, verify_password
+from app.auth import create_access_token, get_current_user, hash_password, verify_password
 from app.database import get_db
 from app.models import User
 from app.schemas import Token, UserCreate, UserOut
@@ -55,3 +55,13 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
     access_token = create_access_token(data={"sub": user.username})
     return Token(access_token=access_token)
+
+
+@router.get("/me", response_model=UserOut)
+def read_current_user(current_user: User = Depends(get_current_user)):
+    """
+    Возвращает данные того, чей токен передан в запросе. Заодно это удобный
+    способ проверить у себя, что токен вообще валиден — если он битый или
+    истёк, сюда даже не долетишь, get_current_user сам вернёт 401.
+    """
+    return current_user

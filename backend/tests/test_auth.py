@@ -65,3 +65,27 @@ def test_login_rejects_unknown_username(client):
     })
 
     assert response.status_code == 401
+
+
+def test_me_returns_current_user_with_valid_token(client):
+    client.post("/auth/register", json={"username": "fox3s", "password": "supersecret123"})
+    login_response = client.post("/auth/login", data={
+        "username": "fox3s",
+        "password": "supersecret123",
+    })
+    token = login_response.json()["access_token"]
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    assert response.json()["username"] == "fox3s"
+
+
+def test_me_rejects_missing_token(client):
+    response = client.get("/auth/me")
+    assert response.status_code == 401
+
+
+def test_me_rejects_garbage_token(client):
+    response = client.get("/auth/me", headers={"Authorization": "Bearer this.is.not.a.valid.token"})
+    assert response.status_code == 401
