@@ -14,7 +14,7 @@ FastAPI + PostgreSQL + SQLAlchemy + Alembic. Пишу и разбираюсь п
 - **Клиент:** Python, `win32gui`/`win32process` (WinAPI event hooks), `psutil`,
   `requests` (отправка на API), SQLite (локальная очередь на случай
   недоступности сервера)
-- **Backend:** FastAPI, PostgreSQL, SQLAlchemy, Alembic
+- **Backend:** FastAPI, PostgreSQL, SQLAlchemy, Alembic, pytest
 - **Бот:** Telegram (aiogram) — статистика за сегодня/вчера/неделю,
   трёхуровневый drill-down (приложение → сайт → конкретная страница)
 
@@ -35,6 +35,12 @@ backend/
     test_connection.py — учебный скрипт проверки подключения к БД
     debug_titles.py     — учебный скрипт: смотрит на реальные window_title
                           из базы побайтово (repr + невидимые Unicode-символы)
+  tests/
+    conftest.py          — фикстуры: изолированная тестовая БД (SQLite in-memory)
+    test_health.py         — /health
+    test_activities.py      — POST /activities/batch (валидация, регрессия на NUL-байты)
+    test_stats.py            — /stats/daily, /stats/weekly (агрегация, границы недели)
+  pytest.ini
   requirements.txt
   .env.example
 
@@ -42,10 +48,6 @@ client/
   tracker.py          — клиент: event-driven трекинг активного окна,
                          батчевая отправка на API + SQLite fallback-очередь,
                          штатная остановка командой 'stop' (не Ctrl+C)
-  report.py            — консольный топ-10 (СЕЙЧАС НЕАКТУАЛЕН: смотрит
-                         в старую локальную SQLite, а не в Postgres —
-                         данные там больше не обновляются; решение о
-                         будущем файла пока отложено)
   scripts/
     test_send.py        — учебный скрипт: тестовая отправка батча на API
   requirements.txt
@@ -79,6 +81,16 @@ uvicorn app.main:app --reload
 > `alembic upgrade head`.
 
 Документация API (Swagger UI): `http://127.0.0.1:8000/docs`
+
+### Тесты
+
+```bash
+cd backend
+pytest -v
+```
+
+Гоняются на изолированной SQLite in-memory базе (см. `tests/conftest.py`) —
+боевая PostgreSQL не трогается.
 
 ### Эндпоинты
 
@@ -163,7 +175,10 @@ python bot.py
 - [x] Telegram-бот: постоянная клавиатура, трёхуровневый drill-down
       (приложение → сайт → страница), период прокидывается через все
       уровни, устойчивость к сетевым сбоям Telegram
-- [ ] Определиться с судьбой `Report.py` (переписать под API или убрать)
+- [x] Backend: автотесты (pytest) на эндпоинты — `/health`, `/activities/batch`
+      (включая регрессию на NUL-байты), `/stats/daily`, `/stats/weekly`
+- [ ] Юнит-тесты на чистые функции (`extract_site`, `clean_telegram_title`) —
+      без БД и HTTP, на реальных edge cases из production-данных
 - [ ] Мультипользовательский режим: `user_id`/`device_id` в `Activity`,
       конфигурируемый `API_URL` на клиенте, `uvicorn --host 0.0.0.0`,
       ролевая модель доступа (RBAC) — обычный пользователь видит в боте
@@ -171,8 +186,5 @@ python bot.py
 - [ ] Аутентификация API (JWT) — сейчас любой клиент может писать/читать
       данные без проверки, кто он такой; естественно ложится поверх
       будущего мультипользовательского режима выше
-- [ ] Автотесты (pytest) — пока всё проверялось руками через Swagger;
-      добавить хотя бы базовые тесты на эндпоинты (`/health`,
-      `/activities/batch`, агрегации) прежде чем структура API разрастётся
 - [ ] Веб-дашборд (Chart.js)
 - [ ] Docker
