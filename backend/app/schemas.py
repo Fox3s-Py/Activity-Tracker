@@ -7,7 +7,7 @@ Pydantic-схемы — валидация входа/выхода API.
 
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 def strip_nul_bytes(value: str | None) -> str | None:
@@ -42,3 +42,22 @@ class ActivityBatchIn(BaseModel):
 class ActivityBatchOut(BaseModel):
     """Ответ сервера после сохранения пачки."""
     inserted: int
+
+
+class UserCreate(BaseModel):
+    """То, что присылает клиент при регистрации."""
+    username: str
+    password: str
+
+
+class UserOut(BaseModel):
+    """
+    То, что сервер возвращает про пользователя. НИКОГДА не включает
+    hashed_password — раз поля просто нет в схеме, оно физически не может
+    случайно утечь в ответ, даже если кто-то забудет об этом подумать.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str
+    is_admin: bool

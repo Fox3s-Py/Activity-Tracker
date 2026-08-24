@@ -8,10 +8,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Activity
+from app.routers.auth import router as auth_router
 from app.schemas import ActivityBatchIn
 
 
 app = FastAPI()
+
+app.include_router(auth_router)
 
 
 @app.get("/health")

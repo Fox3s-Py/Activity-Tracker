@@ -5,6 +5,8 @@ alembic
 psycopg2-binary
 python-dotenv
 pydantic
+passlib[bcrypt]
+bcrypt==4.0.1
 
 # для тестов
 pytest

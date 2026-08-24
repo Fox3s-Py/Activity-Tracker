@@ -1,11 +1,9 @@
 from datetime import datetime
-
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Float, DateTime, Integer, Boolean
 
 
 class Base(DeclarativeBase):
-    """Базовый класс — от него SQLAlchemy узнаёт, какие классы вообще являются таблицами."""
     pass
 
 
@@ -19,6 +17,10 @@ class Activity(Base):
     ended_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ix_activities_started_at", "started_at"),
+    )
 
 
 class User(Base):
