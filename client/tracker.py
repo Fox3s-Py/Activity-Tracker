@@ -21,6 +21,7 @@ WinAPI SetWinEventHook — Windows сама уведомляет о смене �
 """
 
 import ctypes
+import os
 import signal
 import sqlite3
 import threading
@@ -32,10 +33,16 @@ from pathlib import Path
 import psutil
 import requests
 import win32gui
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Конфиг ---
 
-API_URL = "http://127.0.0.1:8000/activities/batch"
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+TRACKER_USERNAME = os.getenv("TRACKER_USERNAME")
+TRACKER_PASSWORD = os.getenv("TRACKER_PASSWORD")
+
 SEND_INTERVAL_SECONDS = 300  # как часто пытаться отправить накопленное
 REQUEST_TIMEOUT_SECONDS = 5
 
@@ -168,18 +175,71 @@ def clear_pending(ids: list[int]) -> None:
         conn.commit()
 
 
+# --- Аутентификация ---
+
+_current_token: str | None = None
+
+
+def login() -> str | None:
+    """Логинится на бэкенде, сохраняет токен в памяти. Возвращает токен или None при неудаче."""
+    global _current_token
+
+    if not TRACKER_USERNAME or not TRACKER_PASSWORD:
+        print("TRACKER_USERNAME/TRACKER_PASSWORD не заданы в .env — не могу залогиниться")
+        return None
+
+    try:
+        response = requests.post(
+            f"{API_URL}/auth/login",
+            data={"username": TRACKER_USERNAME, "password": TRACKER_PASSWORD},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        _current_token = response.json()["access_token"]
+        print("Успешный логин на бэкенде")
+        return _current_token
+    except requests.exceptions.RequestException as e:
+        print(f"Не удалось залогиниться ({e.__class__.__name__})")
+        return None
+
+
 # --- Отправка на бэкенд ---
 
 def send_batch(events: list[dict]) -> bool:
     """
     Пытается отправить пачку событий на бэкенд. Возвращает True при успехе.
     events — словари БЕЗ ключа "id" (это чисто SQLite-специфика, бэкенду не нужен).
+
+    Логинится при первой необходимости (если токена ещё нет). Если сервер
+    отклонит токен (401 — истёк или сброшен) — логинится заново и повторяет
+    отправку один раз, прежде чем сдаться.
     """
+    global _current_token
+
     if not events:
         return True
 
+    if _current_token is None and login() is None:
+        return False  # даже залогиниться не смогли — сеть точно недоступна
+
+    def _post() -> requests.Response:
+        headers = {"Authorization": f"Bearer {_current_token}"}
+        return requests.post(
+            f"{API_URL}/activities/batch",
+            json={"events": events},
+            headers=headers,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+
     try:
-        response = requests.post(API_URL, json={"events": events}, timeout=REQUEST_TIMEOUT_SECONDS)
+        response = _post()
+
+        if response.status_code == 401:
+            print("Токен не принят (401), логинюсь заново")
+            if login() is None:
+                return False
+            response = _post()
+
         response.raise_for_status()
         print(f"Отправлено {len(events)} интервалов на сервер")
         return True
