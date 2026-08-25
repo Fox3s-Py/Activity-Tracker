@@ -49,3 +49,20 @@ def client():
 
     app.dependency_overrides.clear()  # возвращаем как было после теста
     Base.metadata.drop_all(bind=test_engine)  # чистим тестовую базу
+
+
+@pytest.fixture
+def auth_headers(client):
+    """
+    Регистрирует тестового пользователя, логинится, возвращает готовые
+    заголовки с токеном — чтобы не повторять эти три строки в каждом тесте,
+    который трогает защищённый эндпоинт.
+
+    Обрати внимание: эта фикстура сама ЗАПРАШИВАЕТ фикстуру client как
+    параметр — фикстуры умеют зависеть друг от друга точно так же, как тест
+    зависит от фикстуры. pytest сам разберётся в порядке подготовки.
+    """
+    client.post("/auth/register", json={"username": "testuser", "password": "testpass123"})
+    response = client.post("/auth/login", data={"username": "testuser", "password": "testpass123"})
+    token = response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}

@@ -1,7 +1,7 @@
-def test_daily_stats_aggregates_by_process(client):
+def test_daily_stats_aggregates_by_process(client, auth_headers):
     # Сначала кладём данные в базу — через тот же /activities/batch,
     # которым уже пользовались в прошлых тестах
-    client.post("/activities/batch", json={
+    client.post("/activities/batch", headers=auth_headers, json={
         "events": [
             {
                 "process_name": "chrome.exe",
@@ -28,7 +28,7 @@ def test_daily_stats_aggregates_by_process(client):
     })
 
     # Теперь запрашиваем агрегацию за тот же день
-    response = client.get("/stats/daily", params={"target_date": "2026-08-21"})
+    response = client.get("/stats/daily", params={"target_date": "2026-08-21"}, headers=auth_headers)
 
     assert response.status_code == 200
     data = response.json()
@@ -42,10 +42,10 @@ def test_daily_stats_aggregates_by_process(client):
     assert data["stats"][0]["process_name"] == "Code.exe"
 
 
-def test_weekly_stats_aggregates_and_respects_week_boundaries(client):
+def test_weekly_stats_aggregates_and_respects_week_boundaries(client, auth_headers):
     # Неделя 2026-08-17 (пн) - 2026-08-23 (вс). Кладём события внутри
     # недели в разные дни + одно событие ЗА пределами недели.
-    client.post("/activities/batch", json={
+    client.post("/activities/batch", headers=auth_headers, json={
         "events": [
             {
                 "process_name": "chrome.exe",
@@ -72,7 +72,7 @@ def test_weekly_stats_aggregates_and_respects_week_boundaries(client):
     })
 
     # Запрашиваем неделю, указав любую дату внутри неё (четверг)
-    response = client.get("/stats/weekly", params={"target_date": "2026-08-20"})
+    response = client.get("/stats/weekly", params={"target_date": "2026-08-20"}, headers=auth_headers)
 
     assert response.status_code == 200
     data = response.json()

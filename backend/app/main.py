@@ -6,8 +6,9 @@ from fastapi import FastAPI, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_user
 from app.database import get_db
-from app.models import Activity
+from app.models import Activity, User
 from app.routers.auth import router as auth_router
 from app.schemas import ActivityBatchIn
 
@@ -23,7 +24,11 @@ def health():
 
 
 @app.post("/activities/batch")
-def create_activities_batch(batch: ActivityBatchIn, db: Session = Depends(get_db)):
+def create_activities_batch(
+    batch: ActivityBatchIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     objects = [
         Activity(
             process_name=event.process_name,
@@ -42,7 +47,11 @@ def create_activities_batch(batch: ActivityBatchIn, db: Session = Depends(get_db
 
 
 @app.get("/stats/daily")
-def get_daily_stats(target_date: date = Query(default=None), db: Session = Depends(get_db)):
+def get_daily_stats(
+    target_date: date = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     if target_date is None:
         target_date = date.today()
 
@@ -67,7 +76,11 @@ def get_daily_stats(target_date: date = Query(default=None), db: Session = Depen
 
 
 @app.get("/stats/weekly")
-def get_weekly_stats(target_date: date = Query(default=None), db: Session = Depends(get_db)):
+def get_weekly_stats(
+    target_date: date = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     Агрегация за неделю (понедельник-воскресенье), в которую попадает target_date.
     Если target_date не передан — берётся текущая неделя.
@@ -154,6 +167,7 @@ def get_daily_breakdown(
     date_from: date = Query(default=None),
     date_to: date = Query(default=None),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Drill-down внутри одного приложения за диапазон дат [date_from, date_to]:
