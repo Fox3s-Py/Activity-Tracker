@@ -19,10 +19,68 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-API_URL = "http://127.0.0.1:8000"
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+BOT_USERNAME = os.getenv("BOT_USERNAME")
+BOT_PASSWORD = os.getenv("BOT_PASSWORD")
 
 bot = Bot(token=TOKEN)  # type: ignore
 dp = Dispatcher()
+
+# --- Аутентификация на бэкенде ---
+
+_current_token: str | None = None
+
+
+def login() -> str | None:
+    """Логинится на бэкенде, сохраняет токен в памяти. Возвращает токен или None при неудаче."""
+    global _current_token
+
+    if not BOT_USERNAME or not BOT_PASSWORD:
+        print("BOT_USERNAME/BOT_PASSWORD не заданы в .env — не могу залогиниться")
+        return None
+
+    try:
+        response = requests.post(
+            f"{API_URL}/auth/login",
+            data={"username": BOT_USERNAME, "password": BOT_PASSWORD},
+            timeout=5,
+        )
+        response.raise_for_status()
+        _current_token = response.json()["access_token"]
+        print("Успешный логин на бэкенде")
+        return _current_token
+    except requests.exceptions.RequestException as e:
+        print(f"Не удалось залогиниться на бэкенде ({e.__class__.__name__})")
+        return None
+
+
+def authenticated_request(method: str, path: str, **kwargs) -> requests.Response | None:
+    """
+    Единая точка для всех запросов к защищённым эндпоинтам бэкенда.
+    Логинится при первой необходимости, если сервер отклонит токен (401) —
+    логинится заново и повторяет запрос один раз. Возвращает None, если
+    так и не удалось достучаться (сеть недоступна, или логин не проходит).
+    """
+    global _current_token
+
+    if _current_token is None and login() is None:
+        return None
+
+    url = f"{API_URL}{path}"
+    headers = {"Authorization": f"Bearer {_current_token}"}
+
+    try:
+        response = requests.request(method, url, headers=headers, timeout=5, **kwargs)
+
+        if response.status_code == 401:
+            if login() is None:
+                return None
+            headers = {"Authorization": f"Bearer {_current_token}"}
+            response = requests.request(method, url, headers=headers, timeout=5, **kwargs)
+
+        return response
+    except requests.exceptions.RequestException:
+        return None
 
 BTN_TODAY = "📊 Статистика за сегодня"
 BTN_YESTERDAY = "📅 Статистика за вчера"
@@ -147,18 +205,14 @@ async def send_daily_stats(message: Message, target_date: date, label: str, peri
     chat_id = message.chat.id
     await clear_chat_history(chat_id)
 
-    try:
-        response = requests.get(
-            f"{API_URL}/stats/daily",
-            params={"target_date": str(target_date)},
-            timeout=5,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except requests.exceptions.RequestException:
+    response = authenticated_request("GET", "/stats/daily", params={"target_date": str(target_date)})
+
+    if response is None or not response.ok:
         sent = await safe_answer(message, "Не могу достучаться до сервера. Попробуй позже.")
         await track(chat_id, sent)
         return
+
+    data = response.json()
 
     stats = data["stats"]
 
@@ -184,14 +238,14 @@ async def send_weekly_stats(message: Message) -> None:
     chat_id = message.chat.id
     await clear_chat_history(chat_id)
 
-    try:
-        response = requests.get(f"{API_URL}/stats/weekly", timeout=5)
-        response.raise_for_status()
-        data = response.json()
-    except requests.exceptions.RequestException:
+    response = authenticated_request("GET", "/stats/weekly")
+
+    if response is None or not response.ok:
         sent = await safe_answer(message, "Не могу достучаться до сервера. Попробуй позже.")
         await track(chat_id, sent)
         return
+
+    data = response.json()
 
     stats = data["stats"]
 
@@ -240,21 +294,20 @@ async def breakdown_handler(callback: CallbackQuery):
     chat_id = callback.message.chat.id  # type: ignore
     date_from, date_to = period_date_range(period_code)
 
-    try:
-        response = requests.get(
-            f"{API_URL}/stats/daily/breakdown",
-            params={
-                "process_name": process_name,
-                "date_from": str(date_from),
-                "date_to": str(date_to),
-            },
-            timeout=5,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except requests.exceptions.RequestException:
+    response = authenticated_request(
+        "GET", "/stats/daily/breakdown",
+        params={
+            "process_name": process_name,
+            "date_from": str(date_from),
+            "date_to": str(date_to),
+        },
+    )
+
+    if response is None or not response.ok:
         await callback.answer("Не могу достучаться до сервера.", show_alert=True)
         return
+
+    data = response.json()
 
     breakdown = data["breakdown"]
 
@@ -287,22 +340,21 @@ async def title_handler(callback: CallbackQuery):
     chat_id = callback.message.chat.id  # type: ignore
     date_from, date_to = period_date_range(period_code)
 
-    try:
-        response = requests.get(
-            f"{API_URL}/stats/daily/breakdown",
-            params={
-                "process_name": process_name,
-                "site": site,
-                "date_from": str(date_from),
-                "date_to": str(date_to),
-            },
-            timeout=5,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except requests.exceptions.RequestException:
+    response = authenticated_request(
+        "GET", "/stats/daily/breakdown",
+        params={
+            "process_name": process_name,
+            "site": site,
+            "date_from": str(date_from),
+            "date_to": str(date_to),
+        },
+    )
+
+    if response is None or not response.ok:
         await callback.answer("Не могу достучаться до сервера.", show_alert=True)
         return
+
+    data = response.json()
 
     breakdown = data["breakdown"]
 
@@ -321,19 +373,8 @@ async def title_handler(callback: CallbackQuery):
 
 
 async def main():
-    print("Бот запущен. Останови через Ctrl+C.")
-    try:
-        await dp.start_polling(bot)
-    finally:
-        # закрываем сетевую сессию явно — иначе aiohttp иногда ругается
-        # предупреждением про "unclosed client session" при выходе
-        await bot.session.close()
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
-    finally:
-        print("Бот остановлен.")
+    asyncio.run(main())
