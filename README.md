@@ -1,9 +1,9 @@
 # Activity Tracker
 
 Трекер времени в приложениях: клиент на Windows отслеживает активное окно
-(через WinAPI event hooks), шлёт данные на свой REST API, бэкенд хранит и
-агрегирует их в PostgreSQL, Telegram-бот показывает статистику с
-интерактивным drill-down.
+(через WinAPI event hooks), шлёт данные на свой REST API (защищённый JWT),
+бэкенд хранит и агрегирует их в PostgreSQL, Telegram-бот показывает
+статистику с интерактивным drill-down.
 
 Пет-проект для портфолио — стек выбран специально под практику
 FastAPI + PostgreSQL + SQLAlchemy + Alembic. Пишу и разбираюсь по ходу —
@@ -14,7 +14,8 @@ FastAPI + PostgreSQL + SQLAlchemy + Alembic. Пишу и разбираюсь п
 - **Клиент:** Python, `win32gui`/`win32process` (WinAPI event hooks), `psutil`,
   `requests` (отправка на API), SQLite (локальная очередь на случай
   недоступности сервера)
-- **Backend:** FastAPI, PostgreSQL, SQLAlchemy, Alembic, pytest
+- **Backend:** FastAPI, PostgreSQL, SQLAlchemy, Alembic, pytest,
+  JWT-аутентификация (`python-jose`, `passlib`/`bcrypt`)
 - **Бот:** Telegram (aiogram) — статистика за сегодня/вчера/неделю,
   трёхуровневый drill-down (приложение → сайт → конкретная страница)
 
@@ -25,9 +26,13 @@ backend/
   app/
     main.py         — FastAPI-приложение, все эндпоинты
     database.py      — подключение к PostgreSQL, фабрика сессий (get_db)
-    models.py         — SQLAlchemy-модель Activity
-    schemas.py         — Pydantic-схемы для приёма данных API (включая
-                          серверную очистку NUL-байтов на границе системы)
+    models.py         — SQLAlchemy-модели Activity, User
+    schemas.py         — Pydantic-схемы (включая серверную очистку
+                          NUL-байтов, UserCreate/UserOut/Token)
+    auth.py            — хэширование паролей, создание/проверка JWT,
+                          зависимость get_current_user
+    routers/
+      auth.py            — эндпоинты /auth/register, /auth/login, /auth/me
   alembic/            — миграции схемы БД
   alembic.ini
   scripts/
@@ -36,26 +41,34 @@ backend/
     debug_titles.py     — учебный скрипт: смотрит на реальные window_title
                           из базы побайтово (repr + невидимые Unicode-символы)
   tests/
-    conftest.py          — фикстуры: изолированная тестовая БД (SQLite in-memory)
+    conftest.py          — фикстуры: изолированная тестовая БД (SQLite in-memory),
+                            auth_headers (регистрация+логин тестового пользователя)
     test_health.py         — /health
-    test_activities.py      — POST /activities/batch (валидация, регрессия на NUL-байты)
+    test_activities.py      — POST /activities/batch (валидация, регрессия
+                              на NUL-байты, требование авторизации)
     test_stats.py            — /stats/daily, /stats/weekly (агрегация, границы недели)
+    test_extract_site.py      — юнит-тесты на extract_site/clean_telegram_title
+    test_auth.py               — регистрация, логин, /auth/me, отказ по
+                                 неверным/просроченным/отсутствующим токенам
   pytest.ini
   requirements.txt
   .env.example
 
 client/
   tracker.py          — клиент: event-driven трекинг активного окна,
-                         батчевая отправка на API + SQLite fallback-очередь,
+                         батчевая отправка на API (с JWT-логином и
+                         авто-relogin при 401) + SQLite fallback-очередь,
                          штатная остановка командой 'stop' (не Ctrl+C)
   scripts/
     test_send.py        — учебный скрипт: тестовая отправка батча на API
   requirements.txt
+  .env.example
 
 bot/
   bot.py               — Telegram-бот: постоянная клавиатура (сегодня/
                           вчера/неделя), inline drill-down по приложениям
-                          и сайтам, автоочистка старых сообщений
+                          и сайтам, автоочистка старых сообщений,
+                          JWT-логин через authenticated_request()
   requirements.txt
   .env.example
 ```
@@ -67,10 +80,15 @@ bot/
 ```bash
 cd backend
 pip install -r requirements.txt
-cp .env.example .env             # прописать свой DATABASE_URL
+cp .env.example .env             # прописать DATABASE_URL и SECRET_KEY
 python scripts/create_tables.py   # создать схему (первый раз, на пустой БД)
 alembic stamp head                 # сообщить Alembic, что БД уже на актуальной версии
 uvicorn app.main:app --reload
+```
+
+`SECRET_KEY` — сгенерировать своей командой:
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
 > Первая миграция в истории пустая (таблица создавалась раньше через
@@ -80,7 +98,9 @@ uvicorn app.main:app --reload
 > изменениях моделей — уже обычный цикл `alembic revision --autogenerate` +
 > `alembic upgrade head`.
 
-Документация API (Swagger UI): `http://127.0.0.1:8000/docs`
+Документация API (Swagger UI): `http://127.0.0.1:8000/docs` — кнопка
+**Authorize** позволяет залогиниться прямо в браузере и тестировать
+защищённые эндпоинты без ручной вставки токена в заголовки.
 
 ### Тесты
 
@@ -94,7 +114,13 @@ pytest -v
 
 ### Эндпоинты
 
-- `GET /health` — проверка живости
+**Аутентификация:**
+- `POST /auth/register` — регистрация (`username`, `password`)
+- `POST /auth/login` — логин (form-data, не JSON — стандарт OAuth2), возвращает JWT-токен
+- `GET /auth/me` — данные текущего пользователя по токену (требует авторизации)
+
+**Активность (все требуют заголовок `Authorization: Bearer <токен>`):**
+- `GET /health` — проверка живости (без авторизации)
 - `POST /activities/batch` — принимает пачку интервалов активности:
 
 ```json
@@ -129,12 +155,15 @@ pytest -v
 ```bash
 cd client
 pip install -r requirements.txt
+cp .env.example .env    # прописать API_URL, TRACKER_USERNAME, TRACKER_PASSWORD
 python tracker.py
 ```
 
+Логинится на бэкенд при первой отправке, хранит токен в памяти; если
+сервер отклонит токен (401) — логинится заново и повторяет отправку.
 Отправляет накопленные интервалы на бэкенд раз в 5 минут. Если бэкенд
-недоступен — сохраняет их в локальную SQLite-очередь (`pending_events.db`)
-и досылает при следующей успешной попытке.
+недоступен (или логин не проходит) — сохраняет их в локальную
+SQLite-очередь (`pending_events.db`) и досылает при следующей успешной попытке.
 
 Останавливается командой `stop` + Enter в той же консоли (не через Ctrl+C —
 он намеренно отключён, чтобы не ронять WinAPI event hook грязным исключением).
@@ -144,15 +173,17 @@ python tracker.py
 ```bash
 cd bot
 pip install -r requirements.txt
-cp .env.example .env    # прописать свой TELEGRAM_BOT_TOKEN (получить у @BotFather)
+cp .env.example .env    # TELEGRAM_BOT_TOKEN, API_URL, BOT_USERNAME, BOT_PASSWORD
 python bot.py
 ```
 
-Бэкенд должен быть запущен. `/start` показывает постоянную клавиатуру с
-тремя кнопками (сегодня / вчера / неделя). Тап по приложению в статистике
-открывает детализацию по сайтам, тап по сайту — детализацию по конкретным
-страницам. При выборе нового периода старые сообщения бота автоматически
-удаляются, чтобы чат не захламлялся.
+Бэкенд должен быть запущен. Логинится на бэкенд лениво (при первом
+запросе от пользователя), переиспользует токен, при 401 — перелогин и
+повтор (единая точка `authenticated_request()`). `/start` показывает
+постоянную клавиатуру с тремя кнопками (сегодня / вчера / неделя). Тап по
+приложению в статистике открывает детализацию по сайтам, тап по сайту —
+детализацию по конкретным страницам. При выборе нового периода старые
+сообщения бота автоматически удаляются, чтобы чат не захламлялся.
 
 ## Статус
 
@@ -179,14 +210,18 @@ python bot.py
       (включая регрессию на NUL-байты), `/stats/daily`, `/stats/weekly`
 - [x] Backend: юнит-тесты на чистые функции (`extract_site`,
       `clean_telegram_title`) — все найденные источники мусора + edge cases
+- [x] Аутентификация API (JWT): модель `User`, хэширование паролей
+      (bcrypt), регистрация/логин, `get_current_user`, защита всех
+      бизнес-эндпоинтов; клиент и бот логинятся и переживают истечение
+      токена (авто-relogin при 401)
 - [ ] CI (GitHub Actions) — автозапуск pytest при каждом пуше в репозиторий,
       без необходимости помнить и запускать тесты руками
-- [ ] Мультипользовательский режим: `user_id`/`device_id` в `Activity`,
-      конфигурируемый `API_URL` на клиенте, `uvicorn --host 0.0.0.0`,
-      ролевая модель доступа (RBAC) — обычный пользователь видит в боте
-      только свою статистику, админ может запросить агрегацию по всем
-- [ ] Аутентификация API (JWT) — сейчас любой клиент может писать/читать
-      данные без проверки, кто он такой; естественно ложится поверх
-      будущего мультипользовательского режима выше
+- [ ] Мультипользовательский режим: `user_id` в `Activity` (привязка
+      события к залогинившемуся пользователю), фильтрация статистики по
+      пользователю, ролевая модель доступа (RBAC на основе `User.is_admin`) —
+      обычный пользователь видит в боте только свою статистику, админ
+      может запросить агрегацию по всем; регистрация второго реального
+      пользователя (друга), `uvicorn --host 0.0.0.0` для приёма подключений
+      не только с localhost
 - [ ] Веб-дашборд (Chart.js)
 - [ ] Docker
