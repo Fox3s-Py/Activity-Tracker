@@ -22,7 +22,7 @@ FastAPI + PostgreSQL + SQLAlchemy + Alembic. Пишу и разбираюсь п
 
 ## Структура
 
-```
+```text
 .github/
   workflows/
     tests.yml           — CI: автозапуск pytest (backend/tests/) при пуше
@@ -119,6 +119,7 @@ uvicorn app.main:app --reload
 ```
 
 `SECRET_KEY`/`BOT_SERVICE_SECRET` — сгенерировать своей командой:
+
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
@@ -149,6 +150,7 @@ pytest -v
 ### Эндпоинты
 
 **Аутентификация — два независимых способа входа:**
+
 - `POST /auth/register` — регистрация по логину/паролю (`username`, `password`)
 - `POST /auth/login` — логин по логину/паролю (form-data, не JSON —
   стандарт OAuth2), возвращает JWT-токен
@@ -159,6 +161,7 @@ pytest -v
 - `GET /auth/me` — данные текущего пользователя по токену (требует авторизации)
 
 **Device flow — вход десктоп-клиента через Telegram, без пароля:**
+
 - `POST /auth/device/start` — клиент запрашивает одноразовый код (6 символов,
   без похожих на глаз O/0/I/1), живёт 10 минут
 - `POST /auth/device/confirm` — вызывается ботом, когда пользователь прислал
@@ -174,6 +177,7 @@ pytest -v
 
 **Активность (все требуют заголовок `Authorization: Bearer <токен>`,
 данные видны только тому, кто их создал):**
+
 - `GET /health` — проверка живости (без авторизации)
 - `POST /activities/batch` — принимает пачку интервалов активности,
   привязывает их к `current_user`:
@@ -303,9 +307,9 @@ python bot.py
 - [ ] Трей-приложение (`pystray`/`tkinter`), настройки (интервал отправки,
       локальный/VPS-режим, автозапуск), сборка в `.exe` (PyInstaller),
       релиз на GitHub
-- [ ] CI (GitHub Actions) — workflow добавлен (`.github/workflows/tests.yml`,
-      автозапуск `pytest tests/` при пуше/PR в main), ждёт первого живого
-      прогона на GitHub для подтверждения
+- [x] CI (GitHub Actions) — `.github/workflows/tests.yml`, автозапуск
+      `pytest tests/` при пуше/PR в main; подтверждено живым зелёным
+      прогоном на GitHub
 - [ ] Веб-дашборд (Chart.js)
 - [ ] Docker
 - [ ] VPS-хостинг + HTTPS (в самом конце — после того как всё остальное
