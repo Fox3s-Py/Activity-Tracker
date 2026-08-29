@@ -1,9 +1,9 @@
 # Activity Tracker
 
 Трекер времени в приложениях: клиент на Windows отслеживает активное окно
-(через WinAPI event hooks), шлёт данные на свой REST API (защищённый JWT),
-бэкенд хранит и агрегирует их в PostgreSQL, Telegram-бот показывает
-статистику с интерактивным drill-down.
+(через WinAPI event hooks), шлёт данные на свой REST API (защищённый JWT,
+с изоляцией данных по пользователю), бэкенд хранит и агрегирует их в
+PostgreSQL, Telegram-бот показывает статистику с интерактивным drill-down.
 
 Пет-проект для портфолио — стек выбран специально под практику
 FastAPI + PostgreSQL + SQLAlchemy + Alembic. Пишу и разбираюсь по ходу —
@@ -15,7 +15,8 @@ FastAPI + PostgreSQL + SQLAlchemy + Alembic. Пишу и разбираюсь п
   `requests` (отправка на API), SQLite (локальная очередь на случай
   недоступности сервера)
 - **Backend:** FastAPI, PostgreSQL, SQLAlchemy, Alembic, pytest,
-  JWT-аутентификация (`python-jose`, `passlib`/`bcrypt`)
+  JWT-аутентификация (`python-jose`, `passlib`/`bcrypt`) — два способа
+  входа: логин/пароль и через Telegram
 - **Бот:** Telegram (aiogram) — статистика за сегодня/вчера/неделю,
   трёхуровневый drill-down (приложение → сайт → конкретная страница)
 
@@ -24,15 +25,20 @@ FastAPI + PostgreSQL + SQLAlchemy + Alembic. Пишу и разбираюсь п
 ```
 backend/
   app/
-    main.py         — FastAPI-приложение, все эндпоинты
+    main.py         — FastAPI-приложение, все эндпоинты, привязка
+                       activities к current_user, фильтрация /stats/*
+                       по владельцу
     database.py      — подключение к PostgreSQL, фабрика сессий (get_db)
-    models.py         — SQLAlchemy-модели Activity, User
+    models.py         — SQLAlchemy-модели Activity (с user_id), User
+                          (username/hashed_password + telegram_id — оба
+                          способа входа сосуществуют)
     schemas.py         — Pydantic-схемы (включая серверную очистку
-                          NUL-байтов, UserCreate/UserOut/Token)
+                          NUL-байтов, UserCreate/UserOut/Token/
+                          TelegramLoginRequest)
     auth.py            — хэширование паролей, создание/проверка JWT,
-                          зависимость get_current_user
+                          зависимость get_current_user, BOT_SERVICE_SECRET
     routers/
-      auth.py            — эндпоинты /auth/register, /auth/login, /auth/me
+      auth.py            — /auth/register, /auth/login, /auth/telegram-login, /auth/me
   alembic/            — миграции схемы БД
   alembic.ini
   scripts/
@@ -40,15 +46,22 @@ backend/
     test_connection.py — учебный скрипт проверки подключения к БД
     debug_titles.py     — учебный скрипт: смотрит на реальные window_title
                           из базы побайтово (repr + невидимые Unicode-символы)
+    backfill_user_id.py  — разовый скрипт: привязывает старые (докуда
+                          появился user_id) записи activities к конкретному
+                          пользователю
   tests/
     conftest.py          — фикстуры: изолированная тестовая БД (SQLite in-memory),
                             auth_headers (регистрация+логин тестового пользователя)
     test_health.py         — /health
     test_activities.py      — POST /activities/batch (валидация, регрессия
-                              на NUL-байты, требование авторизации)
-    test_stats.py            — /stats/daily, /stats/weekly (агрегация, границы недели)
+                              на NUL-байты, требование авторизации,
+                              корректная привязка user_id)
+    test_stats.py            — /stats/daily, /stats/weekly (агрегация,
+                              границы недели, изоляция данных между пользователями)
     test_extract_site.py      — юнит-тесты на extract_site/clean_telegram_title
-    test_auth.py               — регистрация, логин, /auth/me, отказ по
+    test_auth.py               — регистрация, логин, /auth/me, telegram-login
+                                 (создание/переиспользование пользователя,
+                                 неверный секрет бота), отказ по
                                  неверным/просроченным/отсутствующим токенам
   pytest.ini
   requirements.txt
@@ -80,13 +93,13 @@ bot/
 ```bash
 cd backend
 pip install -r requirements.txt
-cp .env.example .env             # прописать DATABASE_URL и SECRET_KEY
+cp .env.example .env             # прописать DATABASE_URL, SECRET_KEY, BOT_SERVICE_SECRET
 python scripts/create_tables.py   # создать схему (первый раз, на пустой БД)
 alembic stamp head                 # сообщить Alembic, что БД уже на актуальной версии
 uvicorn app.main:app --reload
 ```
 
-`SECRET_KEY` — сгенерировать своей командой:
+`SECRET_KEY`/`BOT_SERVICE_SECRET` — сгенерировать своей командой:
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
@@ -110,18 +123,27 @@ pytest -v
 ```
 
 Гоняются на изолированной SQLite in-memory базе (см. `tests/conftest.py`) —
-боевая PostgreSQL не трогается.
+боевая PostgreSQL не трогается. Секреты (`BOT_SERVICE_SECRET` и т.п.)
+внутри тестов подменяются через `monkeypatch`, а не читаются из реального
+`.env` — тесты не зависят от того, что стоит в системе конкретного разработчика.
 
 ### Эндпоинты
 
-**Аутентификация:**
-- `POST /auth/register` — регистрация (`username`, `password`)
-- `POST /auth/login` — логин (form-data, не JSON — стандарт OAuth2), возвращает JWT-токен
+**Аутентификация — два независимых способа входа:**
+- `POST /auth/register` — регистрация по логину/паролю (`username`, `password`)
+- `POST /auth/login` — логин по логину/паролю (form-data, не JSON —
+  стандарт OAuth2), возвращает JWT-токен
+- `POST /auth/telegram-login` — логин через Telegram: `telegram_id` +
+  `bot_secret` (общий секрет между ботом и бэкендом, не пароль
+  конкретного человека). Пользователь создаётся автоматически при первом
+  обращении; повторный вызов с тем же `telegram_id` не плодит дубликат
 - `GET /auth/me` — данные текущего пользователя по токену (требует авторизации)
 
-**Активность (все требуют заголовок `Authorization: Bearer <токен>`):**
+**Активность (все требуют заголовок `Authorization: Bearer <токен>`,
+данные видны только тому, кто их создал):**
 - `GET /health` — проверка живости (без авторизации)
-- `POST /activities/batch` — принимает пачку интервалов активности:
+- `POST /activities/batch` — принимает пачку интервалов активности,
+  привязывает их к `current_user`:
 
 ```json
 {
@@ -138,7 +160,7 @@ pytest -v
 ```
 
 - `GET /stats/daily?target_date=YYYY-MM-DD` — сумма времени по каждому
-  приложению за день (по умолчанию — сегодня)
+  приложению за день у текущего пользователя (по умолчанию — сегодня)
 - `GET /stats/weekly?target_date=YYYY-MM-DD` — то же самое за неделю
   (понедельник-воскресенье, в которую попадает переданная дата)
 - `GET /stats/daily/breakdown?process_name=chrome.exe&site=YouTube&date_from=...&date_to=...` —
@@ -185,6 +207,10 @@ python bot.py
 детализацию по конкретным страницам. При выборе нового периода старые
 сообщения бота автоматически удаляются, чтобы чат не захламлялся.
 
+> Сейчас бот логинится ОДНИМ общим аккаунтом (`BOT_USERNAME`/`BOT_PASSWORD`)
+> независимо от того, кто ему пишет в Telegram — реальное разделение "у
+> каждого своя статистика" ещё не готово, см. roadmap ниже.
+
 ## Статус
 
 - [x] Клиент: event-driven трекинг активного окна (WinAPI `SetWinEventHook`)
@@ -210,18 +236,31 @@ python bot.py
       (включая регрессию на NUL-байты), `/stats/daily`, `/stats/weekly`
 - [x] Backend: юнит-тесты на чистые функции (`extract_site`,
       `clean_telegram_title`) — все найденные источники мусора + edge cases
-- [x] Аутентификация API (JWT): модель `User`, хэширование паролей
-      (bcrypt), регистрация/логин, `get_current_user`, защита всех
-      бизнес-эндпоинтов; клиент и бот логинятся и переживают истечение
-      токена (авто-relogin при 401)
-- [ ] CI (GitHub Actions) — автозапуск pytest при каждом пуше в репозиторий,
-      без необходимости помнить и запускать тесты руками
-- [ ] Мультипользовательский режим: `user_id` в `Activity` (привязка
-      события к залогинившемуся пользователю), фильтрация статистики по
-      пользователю, ролевая модель доступа (RBAC на основе `User.is_admin`) —
-      обычный пользователь видит в боте только свою статистику, админ
-      может запросить агрегацию по всем; регистрация второго реального
-      пользователя (друга), `uvicorn --host 0.0.0.0` для приёма подключений
-      не только с localhost
+- [x] Аутентификация API (JWT) по логину/паролю: модель `User`,
+      хэширование паролей (bcrypt), регистрация/логин, `get_current_user`,
+      защита всех бизнес-эндпоинтов; клиент и бот логинятся и переживают
+      истечение токена (авто-relogin при 401)
+- [x] Мультипользовательский режим (backend): `user_id` в `Activity`
+      (Alembic-миграция + разовый backfill старых данных через
+      `scripts/backfill_user_id.py`), `POST /activities/batch` привязывает
+      события к `current_user`, `/stats/*` фильтруют по владельцу —
+      изоляция данных между пользователями подтверждена тестами
+- [x] Аутентификация через Telegram (`telegram_id`, `/auth/telegram-login`,
+      `BOT_SERVICE_SECRET`) как альтернативный способ входа — фундамент
+      для персональной идентификации в боте
+- [ ] Бот: связать каждого пишущего в Telegram с его собственным
+      backend-аккаунтом через `/auth/telegram-login` вместо одного общего
+      логина — реальное "у каждого своя статистика в боте"
+- [ ] Ролевая модель доступа (RBAC на основе `User.is_admin`) — админ
+      может запросить агрегацию по всем пользователям в боте
+- [ ] Device flow: авторизация десктоп-клиента через Telegram (код +
+      диплинк + опрос сервера), долгоживущие/refresh-токены для фонового
+      приложения
+- [ ] Трей-приложение (`pystray`/`tkinter`), настройки (интервал отправки,
+      локальный/VPS-режим, автозапуск), сборка в `.exe` (PyInstaller),
+      релиз на GitHub
+- [ ] CI (GitHub Actions) — автозапуск pytest при каждом пуше в репозиторий
 - [ ] Веб-дашборд (Chart.js)
 - [ ] Docker
+- [ ] VPS-хостинг + HTTPS (в самом конце — после того как всё остальное
+      обкатано локально/по Radmin VPN)
