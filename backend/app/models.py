@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -17,9 +17,11 @@ class Activity(Base):
     ended_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
 
     __table_args__ = (
         Index("ix_activities_started_at", "started_at"),
+        Index("ix_activities_user_id", "user_id"),
     )
 
 
