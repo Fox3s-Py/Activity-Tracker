@@ -330,3 +330,7 @@ python bot.py
 - [ ] Docker
 - [ ] VPS-хостинг + HTTPS (в самом конце — после того как всё остальное
       обкатано локально/по Radmin VPN)
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).
