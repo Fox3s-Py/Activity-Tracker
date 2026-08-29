@@ -312,6 +312,44 @@ async def week_handler(message: Message):
     await send_weekly_stats(message)
 
 
+@dp.message(F.text.regexp(r"^[A-Za-z2-9]{6}$"))
+async def device_code_handler(message: Message):
+    """
+    Пользователь прислал 6-символьный код из трей-приложения (device flow).
+    Подтверждаем его на бэкенде от имени этого telegram_id.
+    """
+    telegram_id = get_telegram_id(message)
+    if telegram_id is None:
+        return
+
+    if not BOT_SERVICE_SECRET:
+        await safe_answer(message, "Бот не настроен для подтверждения кода.")
+        return
+
+    if message.text is None:  # не должно происходить (см. F.text.regexp), но Pylance не знает об этой гарантии
+        return
+    code = message.text.strip().upper()
+
+    try:
+        response = requests.post(
+            f"{API_URL}/auth/device/confirm",
+            json={"code": code, "telegram_id": telegram_id, "bot_secret": BOT_SERVICE_SECRET},
+            timeout=5,
+        )
+    except requests.exceptions.RequestException:
+        await safe_answer(message, "Не удалось связаться с сервером, попробуй ещё раз.")
+        return
+
+    if response.status_code == 200:
+        await safe_answer(message, "✅ Подтверждено! Вернись в приложение — вход выполнится автоматически.")
+    elif response.status_code == 404:
+        await safe_answer(message, "Такой код не найден. Проверь, что ввёл его без опечаток.")
+    elif response.status_code == 410:
+        await safe_answer(message, "Код истёк. Запроси новый в приложении и попробуй снова.")
+    else:
+        await safe_answer(message, "Не удалось подтвердить код, попробуй ещё раз.")
+
+
 @dp.callback_query(F.data.startswith("breakdown:"))
 async def breakdown_handler(callback: CallbackQuery):
     _, period_code, process_name = callback.data.split(":", 2)  # type: ignore
