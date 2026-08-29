@@ -37,3 +37,29 @@ class User(Base):
     # превысили диапазон обычного 32-битного Integer)
     telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Храним не сам refresh-токен, а его sha256-хэш — та же логика, что
+    # и с паролем: утечка БД не должна означать утечку рабочих токенов.
+    # Один пользователь — одно активное устройство (см. решение выше);
+    # новый вход через device flow просто перезаписывает старый хэш,
+    # тем самым автоматически отзывая предыдущий refresh-токен.
+    refresh_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class DeviceCode(Base):
+    """
+    Одноразовый код для device flow — трей-клиент показывает его тебе,
+    ты подтверждаешь через Telegram-бота. Живёт недолго (см. EXPIRES_MINUTES
+    в app/auth.py) и удаляется/сгорает после использования.
+    """
+    __tablename__ = "device_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(10), unique=True, nullable=False)
+    # NULL, пока код не подтверждён через бота
+    user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | confirmed
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    __table_args__ = (
+        Index("ix_device_codes_code", "code"),
+    )

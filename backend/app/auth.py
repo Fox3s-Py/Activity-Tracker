@@ -1,4 +1,7 @@
+import hashlib
+import hmac
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, status
@@ -77,3 +80,37 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
 
     return user
+
+
+# --- Device flow ---
+
+DEVICE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # без O/0/I/1 — легко спутать на глаз
+DEVICE_CODE_LENGTH = 6
+DEVICE_CODE_EXPIRE_MINUTES = 10
+REFRESH_TOKEN_EXPIRE_DAYS = 30
+
+
+def generate_device_code() -> str:
+    """Короткий человекочитаемый код — его набирают руками в Telegram."""
+    return "".join(secrets.choice(DEVICE_CODE_ALPHABET) for _ in range(DEVICE_CODE_LENGTH))
+
+
+def hash_token(raw_token: str) -> str:
+    """sha256 — не для паролей (нужен bcrypt, медленный намеренно), а для
+    уже случайных высокоэнтропийных строк, где важна скорость проверки,
+    а не защита от перебора (токен и так не подобрать)."""
+    return hashlib.sha256(raw_token.encode()).hexdigest()
+
+
+def create_refresh_token() -> str:
+    """Сырой refresh-токен, который получит клиент. В БД попадёт только
+    его хэш (см. hash_token) — это делает вызывающий код."""
+    return secrets.token_urlsafe(32)
+
+
+def verify_refresh_token(raw_token: str, stored_hash: str | None) -> bool:
+    """hmac.compare_digest — постоянное время сравнения, та же защита от
+    timing-атак, что и для BOT_SERVICE_SECRET выше."""
+    if stored_hash is None:
+        return False
+    return hmac.compare_digest(hash_token(raw_token), stored_hash)

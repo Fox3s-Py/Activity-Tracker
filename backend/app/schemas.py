@@ -69,7 +69,44 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
+class TokenPair(Token):
+    """Ответ, когда клиенту нужен ещё и refresh_token (device flow, /auth/refresh)."""
+    refresh_token: str
+
+
 class TelegramLoginRequest(BaseModel):
     """То, что бот присылает при логине от имени человека, который ему написал."""
     telegram_id: int
     bot_secret: str
+
+
+class DeviceStartOut(BaseModel):
+    """Ответ клиенту на запрос кода — что показать пользователю."""
+    code: str
+    expires_in_seconds: int
+
+
+class DeviceConfirmIn(BaseModel):
+    """То, что бот присылает, когда пользователь ввёл код в Telegram."""
+    code: str
+    telegram_id: int
+    bot_secret: str
+
+
+class DevicePollIn(BaseModel):
+    code: str
+
+
+class DevicePollOut(BaseModel):
+    """
+    status='pending' — ещё не подтверждено, клиент продолжает опрос.
+    status='confirmed' — вот токены, опрос можно останавливать.
+    """
+    status: str
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str = "bearer"
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str
