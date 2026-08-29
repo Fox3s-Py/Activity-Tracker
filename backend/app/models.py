@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -29,6 +29,11 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    # username/hashed_password — для входа по логину/паролю (может быть NULL,
+    # если пользователь пришёл только через Telegram)
+    username: Mapped[str | None] = mapped_column(String(50), unique=True, nullable=True)
+    hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # telegram_id — для входа через Telegram (BigInteger: id Telegram давно
+    # превысили диапазон обычного 32-битного Integer)
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)

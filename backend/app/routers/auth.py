@@ -1,19 +1,21 @@
 """
-Эндпоинты аутентификации — регистрация, логин (позже).
+Эндпоинты аутентификации — регистрация/логин по паролю, логин через Telegram.
 Отдельный APIRouter, а не прямо в main.py — стандартная практика, когда
 эндпоинтов становится много: группируем по смыслу, каждая группа в своём
 файле, а main.py просто "подключает" их все вместе.
 """
+
+import hmac
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.auth import create_access_token, get_current_user, hash_password, verify_password
+from app.auth import BOT_SERVICE_SECRET, create_access_token, get_current_user, hash_password, verify_password
 from app.database import get_db
 from app.models import User
-from app.schemas import Token, UserCreate, UserOut
+from app.schemas import TelegramLoginRequest, Token, UserCreate, UserOut
 
 # prefix — все пути внутри этого роутера автоматически начинаются с /auth,
 # не нужно писать "/auth/register" руками в каждом @router.post(...)
@@ -46,14 +48,42 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
 
-    if user is None or not verify_password(form_data.password, user.hashed_password):
+    if user is None or user.hashed_password is None or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверное имя пользователя или пароль",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    access_token = create_access_token(data={"sub": user.username})
+    access_token = create_access_token(data={"sub": str(user.id)})
+    return Token(access_token=access_token)
+
+
+@router.post("/telegram-login", response_model=Token)
+def telegram_login(request: TelegramLoginRequest, db: Session = Depends(get_db)):
+    """
+    Вход через Telegram — вызывается ботом от имени человека, который ему
+    написал. bot_secret доказывает, что запрос реально от нашего бота, а
+    не кто попало прислал произвольный telegram_id. Пользователь создаётся
+    автоматически при первом обращении, без пароля вообще — вход только
+    через Telegram.
+    """
+    # hmac.compare_digest вместо обычного == — защита от timing-атак:
+    # обычное сравнение строк останавливается на первом несовпадающем
+    # символе, и по времени ответа можно по кусочкам угадать секрет.
+    # compare_digest всегда работает за постоянное время.
+    if not hmac.compare_digest(request.bot_secret, BOT_SERVICE_SECRET):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный секрет бота")
+
+    user = db.query(User).filter(User.telegram_id == request.telegram_id).first()
+
+    if user is None:
+        user = User(telegram_id=request.telegram_id)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    access_token = create_access_token(data={"sub": str(user.id)})
     return Token(access_token=access_token)
 
 

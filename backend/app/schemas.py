@@ -59,7 +59,7 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    username: str
+    username: str | None = None  # у Telegram-пользователей может отсутствовать
     is_admin: bool
 
 
@@ -67,3 +67,9 @@ class Token(BaseModel):
     """Ответ на успешный логин."""
     access_token: str
     token_type: str = "bearer"
+
+
+class TelegramLoginRequest(BaseModel):
+    """То, что бот присылает при логине от имени человека, который ему написал."""
+    telegram_id: int
+    bot_secret: str

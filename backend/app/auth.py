@@ -13,14 +13,16 @@ from app.models import User
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Секретный ключ для подписи токенов — обязательно из .env, никогда не хардкодить.
-# Дефолт тут только чтобы не падать при импорте, если .env забыт — использовать
-# такой ключ на боевом сервере нельзя.
 SECRET_KEY = os.getenv("SECRET_KEY", "insecure-dev-key-change-me")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # токен живёт 1 день
 
-# Говорит FastAPI/Swagger, где брать токен для кнопки "Authorize" —
-# по сути просто ссылается на наш собственный эндпоинт логина.
+# Отдельный секрет для бота — доказывает бэкенду "это реально мой бот
+# спрашивает токен для этого telegram_id", а не кто попало прислал
+# произвольный id. НЕ пароль конкретного человека — общий секрет между
+# ботом и бэкендом.
+BOT_SERVICE_SECRET = os.getenv("BOT_SERVICE_SECRET", "insecure-dev-bot-secret-change-me")
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 
@@ -36,12 +38,14 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(data: dict) -> str:
     """
-    Создаёт подписанный JWT-токен. 'data' обычно содержит {"sub": username} —
-    'sub' (subject) это стандартное поле JWT: "о ком этот токен".
+    Создаёт подписанный JWT-токен. 'data' обычно содержит {"sub": str(user.id)}.
+    ВАЖНО: 'sub' — это id пользователя, а не username — у пользователей,
+    пришедших через Telegram, username может отсутствовать вовсе, а id
+    есть всегда, независимо от способа входа.
     """
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})  # 'exp' — стандартное поле JWT: срок годности
+    to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -49,8 +53,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     """
     Зависимость для защиты эндпоинтов: Depends(get_current_user).
     Достаёт токен из заголовка Authorization, проверяет его, находит
-    пользователя в базе. Если что-то не так — сразу 401, эндпоинт даже
-    не начнёт выполняться.
+    пользователя по id (не по username — см. create_access_token).
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -60,14 +63,16 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str | None = payload.get("sub")
-        if username is None:
+        user_id_raw = payload.get("sub")
+        if user_id_raw is None:
             raise credentials_exception
-    except JWTError:
-        # сюда попадём и при истёкшем сроке (exp), и при подделанной подписи
+        user_id = int(user_id_raw)
+    except (JWTError, ValueError):
+        # JWTError — истёкший/подделанный токен. ValueError — sub не число
+        # (например, токен старого формата с username вместо id).
         raise credentials_exception
 
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise credentials_exception
 
