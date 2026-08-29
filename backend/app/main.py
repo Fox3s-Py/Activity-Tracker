@@ -62,6 +62,7 @@ def get_daily_stats(
             func.sum(Activity.duration_seconds).label("total_seconds")
         )
         .filter(func.date(Activity.started_at) == target_date)
+        .filter(Activity.user_id == current_user.id)
         .group_by(Activity.process_name)
         .order_by(func.sum(Activity.duration_seconds).desc())
         .all()
@@ -100,6 +101,7 @@ def get_weekly_stats(
         )
         .filter(func.date(Activity.started_at) >= week_start)
         .filter(func.date(Activity.started_at) <= week_end)
+        .filter(Activity.user_id == current_user.id)
         .group_by(Activity.process_name)
         .order_by(func.sum(Activity.duration_seconds).desc())
         .all()
@@ -189,6 +191,7 @@ def get_daily_breakdown(
         .filter(func.date(Activity.started_at) >= date_from)
         .filter(func.date(Activity.started_at) <= date_to)
         .filter(Activity.process_name == process_name)
+        .filter(Activity.user_id == current_user.id)
         .all()
     )
 
