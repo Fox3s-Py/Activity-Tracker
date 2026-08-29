@@ -36,6 +36,7 @@ def create_activities_batch(
             started_at=event.started_at,
             ended_at=event.ended_at,
             duration_seconds=event.duration_seconds,
+            user_id=current_user.id,
         )
         for event in batch.events
     ]

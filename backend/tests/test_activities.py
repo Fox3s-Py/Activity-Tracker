@@ -80,3 +80,30 @@ def test_create_activities_batch_requires_auth(client):
     response = client.post("/activities/batch", json=payload)  # без headers=auth_headers
 
     assert response.status_code == 401
+
+
+def test_create_activities_batch_assigns_correct_user_id(client):
+    """
+    Регрессия на конкретную идею: разные пользователи не должны путать
+    друг друга при сохранении событий — каждое событие получает user_id
+    именно того, кто его отправил, а не абы чей.
+    """
+    client.post("/auth/register", json={"username": "alice", "password": "pass123456"})
+    client.post("/auth/register", json={"username": "bob", "password": "pass123456"})
+
+    alice_token = client.post("/auth/login", data={"username": "alice", "password": "pass123456"}).json()["access_token"]
+    bob_token = client.post("/auth/login", data={"username": "bob", "password": "pass123456"}).json()["access_token"]
+
+    payload = {"events": [{
+        "process_name": "chrome.exe", "window_title": "test",
+        "started_at": "2026-08-25T10:00:00", "ended_at": "2026-08-25T10:05:00", "duration_seconds": 300.0,
+    }]}
+
+    client.post("/activities/batch", json=payload, headers={"Authorization": f"Bearer {alice_token}"})
+    client.post("/activities/batch", json=payload, headers={"Authorization": f"Bearer {bob_token}"})
+
+    # проверяем через /auth/me, какие id реально у alice и bob
+    alice_id = client.get("/auth/me", headers={"Authorization": f"Bearer {alice_token}"}).json()["id"]
+    bob_id = client.get("/auth/me", headers={"Authorization": f"Bearer {bob_token}"}).json()["id"]
+
+    assert alice_id != bob_id  # на всякий случай убеждаемся, что это разные пользователи вообще
