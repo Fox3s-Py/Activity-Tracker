@@ -3,8 +3,18 @@ name: Backend Tests
 "on":
   push:
     branches: ["main"]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - "backend/scripts/**"
+      - "client/scripts/**"
   pull_request:
     branches: ["main"]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - "backend/scripts/**"
+      - "client/scripts/**"
 
 jobs:
   test:
