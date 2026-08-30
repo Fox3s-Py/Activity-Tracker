@@ -176,3 +176,85 @@ def test_register_rejects_absurdly_long_password(client):
     response = client.post("/auth/register", json={"username": "validuser", "password": "a" * 5000})
 
     assert response.status_code == 422
+
+
+def test_me_rejects_token_without_sub(client):
+    """Токен технически валиден (правильно подписан), но без sub — get_current_user
+    должен явно отклонить, а не упасть с необработанным исключением."""
+    from app.auth import ALGORITHM, SECRET_KEY
+    from jose import jwt
+    from datetime import datetime, timedelta, timezone
+
+    token = jwt.encode(
+        {"exp": datetime.now(timezone.utc) + timedelta(minutes=5)},
+        SECRET_KEY, algorithm=ALGORITHM,
+    )
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
+
+
+def test_me_rejects_token_for_deleted_user(client, db_session):
+    """Валидный токен, но пользователь, на которого он указывает, больше не
+    существует в БД (удалён после выдачи токена)."""
+    from app.models import User
+
+    register = client.post("/auth/register", json={"username": "ghost", "password": "supersecret123"})
+    user_id = register.json()["id"]
+    login = client.post("/auth/login", data={"username": "ghost", "password": "supersecret123"})
+    token = login.json()["access_token"]
+
+    db_session.query(User).filter(User.id == user_id).delete()
+    db_session.commit()
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
+
+
+def test_me_rejects_token_signed_with_wrong_key(client):
+    from app.auth import ALGORITHM
+    from jose import jwt
+    from datetime import datetime, timedelta, timezone
+
+    token = jwt.encode(
+        {"sub": "1", "exp": datetime.now(timezone.utc) + timedelta(minutes=5)},
+        "totally-different-secret-key", algorithm=ALGORITHM,
+    )
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
+
+
+def test_me_rejects_expired_token(client):
+    from app.auth import ALGORITHM, SECRET_KEY
+    from jose import jwt
+    from datetime import datetime, timedelta, timezone
+
+    token = jwt.encode(
+        {"sub": "1", "exp": datetime.now(timezone.utc) - timedelta(minutes=1)},
+        SECRET_KEY, algorithm=ALGORITHM,
+    )
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
+
+
+def test_me_rejects_non_numeric_sub(client):
+    """Токен старого формата с username вместо id в sub — комментарий в коде
+    прямо называет это осознанным регресс-путём, но теста на него не было."""
+    from app.auth import ALGORITHM, SECRET_KEY
+    from jose import jwt
+    from datetime import datetime, timedelta, timezone
+
+    token = jwt.encode(
+        {"sub": "not-a-number", "exp": datetime.now(timezone.utc) + timedelta(minutes=5)},
+        SECRET_KEY, algorithm=ALGORITHM,
+    )
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
