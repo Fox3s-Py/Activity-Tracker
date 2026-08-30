@@ -2,6 +2,8 @@
 conftest.py — фикстуры pytest, доступные во всех тестах в этой папке.
 """
 
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -13,21 +15,31 @@ from app.database import get_db
 from app.models import Base
 
 
-# Тестовая база — SQLite в памяти. Создаётся заново для каждого теста,
-# полностью изолирована от реальной PostgreSQL.
+# Тестовая база — по умолчанию SQLite в памяти (быстро, без внешних
+# зависимостей — для локальной разработки). В CI переменная окружения
+# TEST_DATABASE_URL указывает на настоящий Postgres (service-контейнер в
+# .github/workflows/tests.yml) — так тесты, завязанные на реальное
+# поведение СУБД (отказ на NUL-байтах, лимиты длины строк, типы дат),
+# наконец проверяют то, что реально имеет значение, а не поведение SQLite.
 #
 # StaticPool ОБЯЗАТЕЛЕН для sqlite ":memory:" — без него каждая новая сессия
 # открывает НОВОЕ соединение, а SQLite in-memory существует только в рамках
 # одного соединения. Без StaticPool create_all() создаст таблицы в одной
 # "невидимой" базе, а INSERT из эндпоинта пойдёт уже в другую, пустую —
-# отсюда "no such table" при первом же реальном запросе.
-TEST_DATABASE_URL = "sqlite:///:memory:"
+# отсюда "no such table" при первом же реальном запросе. Для Postgres
+# StaticPool не нужен и семантически неверен (это уже настоящий сервер,
+# держать одно-единственное соединение на весь прогон тестов незачем).
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "sqlite:///:memory:")
 
-test_engine = create_engine(
-    TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
+if TEST_DATABASE_URL.startswith("sqlite"):
+    test_engine = create_engine(
+        TEST_DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+else:
+    test_engine = create_engine(TEST_DATABASE_URL)
+
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 
