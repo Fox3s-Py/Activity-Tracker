@@ -6,8 +6,9 @@ Pydantic-схемы — валидация входа/выхода API.
 """
 
 from datetime import datetime
+from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
 def strip_nul_bytes(value: str | None) -> str | None:
@@ -28,10 +29,34 @@ class ActivityIn(BaseModel):
     ended_at: datetime
     duration_seconds: float
 
+    # Разумный потолок на одну запись — сутки. Не физический закон, а
+    # защита от явно кривых данных (например, сломанные часы клиента).
+    # Если появится законный сценарий с более длинными интервалами —
+    # значение стоит пересмотреть осознанно, а не поднимать втихую.
+    MAX_DURATION_SECONDS: ClassVar[int] = 24 * 60 * 60
+
     @field_validator("process_name", "window_title", mode="before")
     @classmethod
     def clean_nul_bytes(cls, value):
         return strip_nul_bytes(value)
+
+    @field_validator("duration_seconds")
+    @classmethod
+    def duration_must_be_sane(cls, value):
+        if value < 0:
+            raise ValueError("duration_seconds не может быть отрицательным")
+        if value > cls.MAX_DURATION_SECONDS:
+            raise ValueError(
+                f"duration_seconds больше {cls.MAX_DURATION_SECONDS} "
+                "(суток) — подозрительно, отклонено"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def ended_not_before_started(self):
+        if self.ended_at < self.started_at:
+            raise ValueError("ended_at не может быть раньше started_at")
+        return self
 
 
 class ActivityBatchIn(BaseModel):

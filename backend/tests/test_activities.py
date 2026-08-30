@@ -107,3 +107,76 @@ def test_create_activities_batch_assigns_correct_user_id(client):
     bob_id = client.get("/auth/me", headers={"Authorization": f"Bearer {bob_token}"}).json()["id"]
 
     assert alice_id != bob_id  # на всякий случай убеждаемся, что это разные пользователи вообще
+
+def test_create_activities_batch_rejects_negative_duration(client, auth_headers):
+    payload = {
+        "events": [
+            {
+                "process_name": "chrome.exe",
+                "window_title": "YouTube",
+                "started_at": "2026-08-25T12:00:00",
+                "ended_at": "2026-08-25T12:05:00",
+                "duration_seconds": -99999.0,
+            }
+        ]
+    }
+
+    response = client.post("/activities/batch", json=payload, headers=auth_headers)
+
+    assert response.status_code == 422
+
+
+def test_create_activities_batch_rejects_ended_before_started(client, auth_headers):
+    payload = {
+        "events": [
+            {
+                "process_name": "chrome.exe",
+                "window_title": "YouTube",
+                "started_at": "2026-08-25T12:00:00",
+                "ended_at": "2026-08-25T11:00:00",  # раньше started_at
+                "duration_seconds": 100.0,
+            }
+        ]
+    }
+
+    response = client.post("/activities/batch", json=payload, headers=auth_headers)
+
+    assert response.status_code == 422
+
+
+def test_create_activities_batch_rejects_duration_over_a_day(client, auth_headers):
+    payload = {
+        "events": [
+            {
+                "process_name": "chrome.exe",
+                "window_title": "YouTube",
+                "started_at": "2026-08-25T12:00:00",
+                "ended_at": "2026-08-26T13:00:00",
+                "duration_seconds": 90000.0,  # больше 86400 (суток)
+            }
+        ]
+    }
+
+    response = client.post("/activities/batch", json=payload, headers=auth_headers)
+
+    assert response.status_code == 422
+
+
+def test_create_activities_batch_accepts_zero_duration(client, auth_headers):
+    """Граничный случай: duration_seconds = 0 и started_at == ended_at — валидно."""
+    payload = {
+        "events": [
+            {
+                "process_name": "chrome.exe",
+                "window_title": "YouTube",
+                "started_at": "2026-08-25T12:00:00",
+                "ended_at": "2026-08-25T12:00:00",
+                "duration_seconds": 0.0,
+            }
+        ]
+    }
+
+    response = client.post("/activities/batch", json=payload, headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"inserted": 1}
