@@ -123,3 +123,20 @@ def test_daily_stats_shows_only_own_data(client):
     # железобетонная проверка: чужого процесса в списке быть не должно вообще
     assert "Code.exe" not in alice_processes
     assert "chrome.exe" not in bob_processes
+
+def test_daily_stats_requires_auth(client):
+    response = client.get("/stats/daily")  # без headers=auth_headers
+
+    assert response.status_code == 401
+
+
+def test_weekly_stats_requires_auth(client):
+    response = client.get("/stats/weekly")
+
+    assert response.status_code == 401
+
+
+def test_breakdown_stats_requires_auth(client):
+    response = client.get("/stats/daily/breakdown", params={"process_name": "chrome.exe"})
+
+    assert response.status_code == 401
