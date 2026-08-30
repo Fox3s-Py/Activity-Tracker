@@ -258,3 +258,17 @@ def test_me_rejects_non_numeric_sub(client):
     response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 401
+
+
+def test_verify_refresh_token_returns_false_for_none_hash():
+    """
+    Прямой юнит-тест на app/auth.py:verify_refresh_token — эта ветка
+    недостижима через реальный API: /auth/refresh заранее фильтрует
+    пользователей через User.refresh_token_hash.is_not(None), так что
+    verify_refresh_token с stored_hash=None никогда не вызывается в
+    реальном запросе. Без прямого теста строка осталась бы единственной
+    непроверенной во всём модуле аутентификации.
+    """
+    from app.auth import verify_refresh_token
+
+    assert verify_refresh_token("any-token-value", None) is False
