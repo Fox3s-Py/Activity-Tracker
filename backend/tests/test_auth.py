@@ -134,3 +134,45 @@ def test_telegram_login_rejects_wrong_bot_secret(client, monkeypatch):
     })
 
     assert response.status_code == 401
+
+def test_register_rejects_empty_username(client):
+    response = client.post("/auth/register", json={"username": "", "password": "supersecret123"})
+
+    assert response.status_code == 422
+
+
+def test_register_rejects_empty_password(client):
+    response = client.post("/auth/register", json={"username": "validuser", "password": ""})
+
+    assert response.status_code == 422
+
+
+def test_register_rejects_username_over_50_chars(client):
+    """Колонка users.username — String(50); без этой границы на Pydantic-уровне
+    слишком длинный username улетел бы прямо в БД."""
+    response = client.post("/auth/register", json={"username": "x" * 51, "password": "supersecret123"})
+
+    assert response.status_code == 422
+
+
+def test_register_rejects_password_over_72_bytes(client):
+    """bcrypt проверяет только первые 72 байта пароля — молча, без ошибки.
+    Отклоняем явно на границе API, а не полагаемся на тихое поведение библиотеки."""
+    response = client.post("/auth/register", json={"username": "validuser", "password": "a" * 100})
+
+    assert response.status_code == 422
+
+
+def test_register_accepts_password_exactly_72_bytes(client):
+    """Граничный случай: ровно 72 байта — на пределе, но ещё валидно."""
+    response = client.post("/auth/register", json={"username": "validuser", "password": "a" * 72})
+
+    assert response.status_code == 201
+
+
+def test_register_rejects_absurdly_long_password(client):
+    """Верхний потолок на уровне Pydantic (max_length=200) — дешёвая защита
+    от совсем неадекватного ввода, срабатывает раньше байтовой проверки."""
+    response = client.post("/auth/register", json={"username": "validuser", "password": "a" * 5000})
+
+    assert response.status_code == 422

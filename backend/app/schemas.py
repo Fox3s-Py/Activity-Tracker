@@ -8,7 +8,7 @@ Pydantic-схемы — валидация входа/выхода API.
 from datetime import datetime
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def strip_nul_bytes(value: str | None) -> str | None:
@@ -71,8 +71,34 @@ class ActivityBatchOut(BaseModel):
 
 class UserCreate(BaseModel):
     """То, что присылает клиент при регистрации."""
-    username: str
-    password: str
+    # max_length совпадает с колонкой users.username (String(50)) — без
+    # этой границы на Pydantic-уровне слишком длинный username улетал бы
+    # прямо в БД и падал там уже как DataError вместо аккуратного 422.
+    username: str = Field(min_length=3, max_length=50)
+    # max_length здесь — не точная граница (её считает байтовая проверка
+    # ниже), а дешёвый предварительный отсекатель совсем абсурдного ввода
+    # (мегабайты текста в поле пароля) ДО того, как мы вообще станем
+    # его кодировать в field_validator.
+    password: str = Field(min_length=8, max_length=200)
+
+    # bcrypt (через passlib) физически проверяет только первые 72 БАЙТА
+    # пароля — в этой версии не с ошибкой, а МОЛЧА обрезая длинные пароли.
+    # Проверено: pwd_context.verify("a"*100, hash) и
+    # pwd_context.verify("a"*72 + "мусор", hash) дают одинаковый результат.
+    # Явно отклоняем на границе API, а не полагаемся на тихое поведение
+    # библиотеки — так пользователь получает понятную ошибку, а не иллюзию
+    # того, что весь его длинный пароль учтён.
+    MAX_PASSWORD_BYTES: ClassVar[int] = 72
+
+    @field_validator("password")
+    @classmethod
+    def password_must_fit_bcrypt_limit(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > cls.MAX_PASSWORD_BYTES:
+            raise ValueError(
+                f"пароль длиннее {cls.MAX_PASSWORD_BYTES} байт — "
+                "bcrypt всё равно проверит только начало, отклонено явно"
+            )
+        return value
 
 
 class UserOut(BaseModel):
