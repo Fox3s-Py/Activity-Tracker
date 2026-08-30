@@ -1,6 +1,25 @@
 import os
+from datetime import datetime, timedelta, timezone
+
+from app.models import DeviceCode
 
 BOT_SECRET = os.getenv("BOT_SERVICE_SECRET", "insecure-dev-bot-secret-change-me")
+
+
+def _expire_code(db, code: str) -> None:
+    """
+    Тестовый helper: напрямую (в обход HTTP) отодвигает created_at
+    существующего device-кода на 11 минут в прошлое — имитирует истечение
+    10-минутного TTL без реального ожидания в тесте. Принимает готовую
+    сессию (фикстура db_session), а не открывает свою — гарантированно
+    тот же test_engine, что и у client (см. пояснение в conftest.py).
+    Наивный datetime (без tzinfo) — так же, как он реально round-trip'ится
+    через SQLite (проверено отдельно: datetime.now(timezone.utc) после
+    сохранения и чтения обратно теряет tzinfo).
+    """
+    device_code = db.query(DeviceCode).filter(DeviceCode.code == code).first()
+    device_code.created_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=11)
+    db.commit()
 
 
 def test_device_start_returns_code(client):
@@ -116,3 +135,27 @@ def test_old_refresh_token_stops_working_after_rotation(client):
     # повторное использование СТАРОГО токена больше не работает
     reuse_attempt = client.post("/auth/refresh", json={"refresh_token": old_refresh_token})
     assert reuse_attempt.status_code == 401
+
+
+def test_confirm_rejects_expired_code(client, db_session):
+    code = client.post("/auth/device/start").json()["code"]
+    _expire_code(db_session, code)
+
+    response = client.post("/auth/device/confirm", json={
+        "code": code, "telegram_id": 111, "bot_secret": BOT_SECRET,
+    })
+
+    assert response.status_code == 410
+
+    # код должен быть удалён из БД, а не просто отклонён на этот раз
+    assert db_session.query(DeviceCode).filter(DeviceCode.code == code).first() is None
+
+
+def test_poll_rejects_expired_code(client, db_session):
+    code = client.post("/auth/device/start").json()["code"]
+    _expire_code(db_session, code)
+
+    response = client.post("/auth/device/poll", json={"code": code})
+
+    assert response.status_code == 410
+    assert db_session.query(DeviceCode).filter(DeviceCode.code == code).first() is None

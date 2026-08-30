@@ -52,6 +52,27 @@ def client():
 
 
 @pytest.fixture
+def db_session(client):
+    """
+    Прямой доступ к тестовой БД в обход HTTP — для тестов, которым нужно
+    руками поменять уже сохранённые данные (например, состарить created_at,
+    чтобы проверить логику истечения кода без реального ожидания 10 минут).
+
+    Зависит от client (не просто использует TestSessionLocal напрямую в
+    тесте) намеренно: так гарантированно берётся ТОТ ЖЕ test_engine, на
+    котором client уже создал таблицы — прямой `from tests.conftest import
+    TestSessionLocal` в файле теста этого не гарантирует, потому что без
+    tests/__init__.py pytest и обычный import могут загрузить conftest.py
+    как два РАЗНЫХ модуля с двумя независимыми SQLite-базами в памяти.
+    """
+    db = TestSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@pytest.fixture
 def auth_headers(client):
     """
     Регистрирует тестового пользователя, логинится, возвращает готовые
