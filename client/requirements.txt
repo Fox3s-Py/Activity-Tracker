@@ -1,4 +1,8 @@
-psutil
-pywin32
-requests
-python-dotenv
+# Версии зафиксированы намеренно — см. комментарий в backend/requirements.txt.
+
+psutil==7.2.2
+# pywin32 — только Windows: клиент завязан на WinAPI (SetWinEventHook,
+# GetWindowText), на Linux/macOS не ставится и не запускается.
+pywin32==311
+requests==2.32.5
+python-dotenv==1.2.2

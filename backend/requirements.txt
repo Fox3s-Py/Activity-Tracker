@@ -1,15 +1,23 @@
-fastapi
-uvicorn
-sqlalchemy
-alembic
-psycopg2-binary
-python-dotenv
-pydantic
-passlib[bcrypt]
+# Версии зафиксированы намеренно: без этого свежий релиз FastAPI или Pydantic
+# может уронить CI на коммите, который ничего не менял, а тот, кто клонирует
+# репозиторий через полгода, получит другой набор версий и, возможно,
+# нерабочий проект. Обновляем осознанно — поднимаем версию, гоняем тесты.
+
+fastapi==0.141.1
+uvicorn==0.52.4
+sqlalchemy==2.0.52
+alembic==1.19.1
+psycopg2-binary==2.9.12
+python-dotenv==1.2.2
+pydantic==2.12.5
+passlib[bcrypt]==1.7.4
+# Именно 4.0.1, а не свежее: passlib 1.7.4 определяет версию bcrypt через
+# bcrypt.__about__, которое удалено начиная с bcrypt 4.1. На новых версиях
+# passlib сыплет ошибкой чтения версии при каждом хэшировании пароля.
 bcrypt==4.0.1
-python-jose[cryptography]
-python-multipart
+python-jose[cryptography]==3.5.0
+python-multipart==0.0.32
 
 # для тестов
-pytest
-httpx
+pytest==9.1.1
+httpx==0.28.1

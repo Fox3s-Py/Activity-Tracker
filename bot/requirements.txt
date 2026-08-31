@@ -1,3 +1,5 @@
-aiogram
-requests
-python-dotenv
+# Версии зафиксированы намеренно — см. комментарий в backend/requirements.txt.
+
+aiogram==3.27.0
+requests==2.32.5
+python-dotenv==1.2.2
