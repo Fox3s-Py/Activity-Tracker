@@ -1,5 +1,5 @@
 import core
-
+import requests
 
 # --- is_ignored ---
 
@@ -222,3 +222,71 @@ def test_buffer_survives_concurrent_add_and_flush():
 
     assert len(collected) == PRODUCERS * EVENTS_PER_PRODUCER
 
+# --- login / send_batch (сеть подделана через monkeypatch на requests.post) ---
+
+def test_login_without_credentials_returns_none_without_network_call(monkeypatch):
+    monkeypatch.setattr(core, "TRACKER_USERNAME", None)
+    monkeypatch.setattr(core, "TRACKER_PASSWORD", None)
+
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: calls.append(1))
+
+    result = core.login()
+
+    assert result is None
+    assert calls == []
+
+class FakeResponse:
+    def __init__(self, status_code=200, json_data=None):
+        self.status_code = status_code
+        self._json_data = json_data or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"{self.status_code} error")
+
+    def json(self):
+        return self._json_data
+
+
+def test_login_success_stores_token(monkeypatch):
+    monkeypatch.setattr(core, "TRACKER_USERNAME", "testuser")
+    monkeypatch.setattr(core, "TRACKER_PASSWORD", "testpass")
+    monkeypatch.setattr(core, "_current_token", None)
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeResponse(200, {"access_token": "abc123"}))
+
+    result = core.login()
+
+    assert result == "abc123"
+    assert core._current_token == "abc123"
+
+def test_send_batch_empty_events_returns_true_without_network_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: calls.append(1))
+
+    assert core.send_batch([]) is True
+    assert calls == []
+
+def test_send_batch_retries_after_401(monkeypatch):
+    monkeypatch.setattr(core, "TRACKER_USERNAME", "testuser")
+    monkeypatch.setattr(core, "TRACKER_PASSWORD", "testpass")
+    monkeypatch.setattr(core, "_current_token", "stale-token")
+
+    call_log = []
+
+    def fake_post(url, **kwargs):
+        if "/auth/login" in url:
+            call_log.append("login")
+            return FakeResponse(200, {"access_token": "fresh-token"})
+        call_log.append("batch")
+        # первая попытка батча — 401 (протухший токен), вторая — успех
+        if call_log.count("batch") == 1:
+            return FakeResponse(401)
+        return FakeResponse(200)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    result = core.send_batch([{"process_name": "chrome.exe"}])
+
+    assert result is True
+    assert call_log == ["batch", "login", "batch"]
