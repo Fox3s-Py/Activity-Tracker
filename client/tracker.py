@@ -23,17 +23,27 @@ WinAPI SetWinEventHook — Windows сама уведомляет о смене �
 import ctypes
 import os
 import signal
-import sqlite3
 import threading
 import time
 from ctypes import wintypes
 from datetime import datetime
-from pathlib import Path
 
 import psutil
 import requests
 import win32gui
 from dotenv import load_dotenv
+
+from core import (
+    PENDING_DB_FILE,
+    is_ignored,
+    strip_id,
+    add_to_buffer,
+    flush_buffer,
+    init_pending_db,
+    save_pending,
+    load_pending,
+    clear_pending,
+)
 
 load_dotenv()
 
@@ -45,31 +55,6 @@ TRACKER_PASSWORD = os.getenv("TRACKER_PASSWORD")
 
 SEND_INTERVAL_SECONDS = 300  # как часто пытаться отправить накопленное
 REQUEST_TIMEOUT_SECONDS = 5
-
-PENDING_DB_FILE = Path("pending_events.db")  # локальная очередь неотправленного
-
-# Блэклист: (process_name, window_title) считаются "системным мельканием"
-# и полностью игнорируются — как будто события не было, текущий интервал
-# просто продолжается.
-#
-# window_title сравнивается точно. Если хочешь игнорировать процесс целиком
-# независимо от заголовка — добавь (process_name, None).
-IGNORE_LIST: set[tuple[str, str | None]] = {
-    ("explorer.exe", "Переключение задач"),
-    ("explorer.exe", ""),
-}
-
-
-def is_ignored(process_name: str, window_title: str) -> bool:
-    """Проверяет, входит ли (process, title) в блэклист системных окон."""
-    process_name = process_name.lower()
-    for ignored_process, ignored_title in IGNORE_LIST:
-        if process_name != ignored_process.lower():
-            continue
-        if ignored_title is None or ignored_title == window_title:
-            return True
-    return False
-
 
 # --- WinAPI константы ---
 
@@ -99,81 +84,6 @@ WinEventProcType = ctypes.WINFUNCTYPE(
 current_window: tuple[str, str] | None = None
 current_started_at: datetime | None = None
 current_hwnd: int | None = None
-
-# --- Буфер закрытых интервалов, готовых к отправке (общий между потоками) ---
-
-buffer: list[dict] = []
-buffer_lock = threading.Lock()
-
-
-# --- Буфер в памяти ---
-
-def add_to_buffer(event: dict) -> None:
-    """Добавляет готовый интервал в буфер отправки. Вызывается из колбэка хука."""
-    with buffer_lock:
-        buffer.append(event)
-
-
-def flush_buffer() -> list[dict]:
-    """Забирает всё, что накопилось в буфере, и очищает его. Вызывается фоновым потоком."""
-    with buffer_lock:
-        events = buffer.copy()
-        buffer.clear()
-    return events
-
-
-# --- Локальная SQLite-очередь неотправленного ---
-
-def init_pending_db() -> None:
-    """Таблица-очередь: сюда падают события, которые не удалось отправить."""
-    with sqlite3.connect(PENDING_DB_FILE) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS pending_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                process_name TEXT NOT NULL,
-                window_title TEXT,
-                started_at TEXT NOT NULL,
-                ended_at TEXT NOT NULL,
-                duration_seconds REAL NOT NULL
-            )
-            """
-        )
-        conn.commit()
-
-
-def save_pending(events: list[dict]) -> None:
-    """Сохраняет события, которые не удалось отправить, в локальную очередь."""
-    if not events:
-        return
-    with sqlite3.connect(PENDING_DB_FILE) as conn:
-        conn.executemany(
-            """
-            INSERT INTO pending_events (process_name, window_title, started_at, ended_at, duration_seconds)
-            VALUES (:process_name, :window_title, :started_at, :ended_at, :duration_seconds)
-            """,
-            events,
-        )
-        conn.commit()
-
-
-def load_pending() -> list[dict]:
-    """Читает всё, что накопилось в очереди — вместе с id (нужен для удаления после отправки)."""
-    with sqlite3.connect(PENDING_DB_FILE) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM pending_events").fetchall()
-        return [dict(row) for row in rows]
-
-
-def clear_pending(ids: list[int]) -> None:
-    """Удаляет успешно отправленные события из очереди по их id."""
-    if not ids:
-        return
-    with sqlite3.connect(PENDING_DB_FILE) as conn:
-        placeholders = ",".join("?" * len(ids))
-        conn.execute(f"DELETE FROM pending_events WHERE id IN ({placeholders})", ids)
-        conn.commit()
-
 
 # --- Аутентификация ---
 
@@ -246,11 +156,6 @@ def send_batch(events: list[dict]) -> bool:
     except requests.exceptions.RequestException as e:
         print(f"Не удалось отправить на сервер ({e.__class__.__name__}), сохраняю локально")
         return False
-
-
-def strip_id(events: list[dict]) -> list[dict]:
-    """Убирает служебное поле id перед отправкой в API (бэкенд его не ждёт)."""
-    return [{k: v for k, v in e.items() if k != "id"} for e in events]
 
 
 def flush_and_send() -> None:
