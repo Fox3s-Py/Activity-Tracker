@@ -220,3 +220,32 @@ def test_create_activities_batch_accepts_rounded_duration(client, auth_headers):
     response = client.post("/activities/batch", json=payload, headers=auth_headers)
 
     assert response.status_code == 200
+
+
+def test_create_activities_batch_rejects_over_1000_events(client, auth_headers):
+    event = {
+        "process_name": "chrome.exe",
+        "started_at": "2026-08-30T10:00:00",
+        "ended_at": "2026-08-30T10:01:00",
+        "duration_seconds": 60.0,
+    }
+    payload = {"events": [event] * 1001}
+
+    response = client.post("/activities/batch", json=payload, headers=auth_headers)
+
+    assert response.status_code == 422
+
+
+def test_create_activities_batch_accepts_exactly_1000_events(client, auth_headers):
+    event = {
+        "process_name": "chrome.exe",
+        "started_at": "2026-08-30T10:00:00",
+        "ended_at": "2026-08-30T10:01:00",
+        "duration_seconds": 60.0,
+    }
+    payload = {"events": [event] * 1000}
+
+    response = client.post("/activities/batch", json=payload, headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"inserted": 1000}

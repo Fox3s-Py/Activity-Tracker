@@ -75,7 +75,10 @@ class ActivityIn(BaseModel):
 
 class ActivityBatchIn(BaseModel):
     """Пачка интервалов — то, что реально шлёт клиент раз в N минут."""
-    events: list[ActivityIn]
+    # Реальный батч — десятки событий (клиент шлёт раз в 5 минут). Без
+    # границы список принимал сколько угодно элементов — случайный баг
+    # на клиенте (зациклился) или намеренная перегрузка сервера.
+    events: list[ActivityIn] = Field(max_length=1000)
 
 
 class ActivityBatchOut(BaseModel):
