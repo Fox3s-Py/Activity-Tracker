@@ -1,4 +1,4 @@
-name: Backend Tests
+name: Tests
 
 "on":
   push:
@@ -17,7 +17,7 @@ name: Backend Tests
       - "client/scripts/**"
 
 jobs:
-  test:
+  backend:
     runs-on: ubuntu-latest
 
     defaults:
@@ -64,6 +64,37 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  # client и bot не нуждаются в Postgres — отдельная задача без сервисов,
+  # чтобы не тратить время на его поднятие там, где он не используется.
+  # matrix вместо двух почти одинаковых копий одного и того же блока.
+  client-bot:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [client, bot]
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        # pytest не прописан в requirements.txt client/bot — ставим отдельно
+        # тут же, до появления отдельного requirements-dev.txt (issue #19)
+        run: pip install -r requirements.txt pytest
 
       - name: Run tests
         run: pytest tests/ -v
