@@ -290,3 +290,101 @@ def test_send_batch_retries_after_401(monkeypatch):
 
     assert result is True
     assert call_log == ["batch", "login", "batch"]
+
+def test_flush_and_send_server_down_saves_to_pending_queue(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    monkeypatch.setattr(core, "TRACKER_USERNAME", "testuser")
+    monkeypatch.setattr(core, "TRACKER_PASSWORD", "testpass")
+    monkeypatch.setattr(core, "_current_token", None)
+
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: (_ for _ in ()).throw(requests.exceptions.ConnectionError()))
+
+    core.buffer.clear()
+    core.add_to_buffer({
+        "process_name": "chrome.exe", "window_title": "X",
+        "started_at": "2026-09-01T10:00:00", "ended_at": "2026-09-01T10:01:00", "duration_seconds": 60.0,
+    })
+
+    core.flush_and_send()
+
+    pending = core.load_pending()
+    assert len(pending) == 1
+    assert pending[0]["process_name"] == "chrome.exe"
+
+def test_flush_and_send_recovery_sends_buffer_and_queue_together(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    monkeypatch.setattr(core, "TRACKER_USERNAME", "testuser")
+    monkeypatch.setattr(core, "TRACKER_PASSWORD", "testpass")
+    monkeypatch.setattr(core, "_current_token", "valid-token")
+
+    # что-то уже лежало в очереди с прошлого раза
+    core.save_pending([{
+        "process_name": "telegram.exe", "window_title": "Y",
+        "started_at": "2026-09-01T09:00:00", "ended_at": "2026-09-01T09:01:00", "duration_seconds": 60.0,
+    }])
+
+    sent_events_holder = []
+
+    def fake_post(url, **kwargs):
+        if "/activities/batch" in url:
+            sent_events_holder.append(kwargs["json"]["events"])
+        return FakeResponse(200, {"access_token": "valid-token"})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    core.buffer.clear()
+    core.add_to_buffer({
+        "process_name": "chrome.exe", "window_title": "X",
+        "started_at": "2026-09-01T10:00:00", "ended_at": "2026-09-01T10:01:00", "duration_seconds": 60.0,
+    })
+
+    core.flush_and_send()
+
+    assert len(sent_events_holder) == 1
+    sent = sent_events_holder[0]
+    assert len(sent) == 2
+    assert all("id" not in e for e in sent)
+    assert core.load_pending() == []
+
+def test_flush_and_send_two_failures_dont_duplicate_or_overwrite(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    monkeypatch.setattr(core, "TRACKER_USERNAME", "testuser")
+    monkeypatch.setattr(core, "TRACKER_PASSWORD", "testpass")
+    monkeypatch.setattr(core, "_current_token", None)
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: (_ for _ in ()).throw(requests.exceptions.ConnectionError()))
+
+    # первая неудачная попытка
+    core.buffer.clear()
+    core.add_to_buffer({
+        "process_name": "chrome.exe", "window_title": "First",
+        "started_at": "2026-09-01T10:00:00", "ended_at": "2026-09-01T10:01:00", "duration_seconds": 60.0,
+    })
+    core.flush_and_send()
+
+    # вторая неудачная попытка, с ДРУГИМ событием в буфере
+    core.buffer.clear()
+    core.add_to_buffer({
+        "process_name": "telegram.exe", "window_title": "Second",
+        "started_at": "2026-09-01T11:00:00", "ended_at": "2026-09-01T11:01:00", "duration_seconds": 60.0,
+    })
+    core.flush_and_send()
+
+    pending = core.load_pending()
+    titles = {e["window_title"] for e in pending}
+    assert titles == {"First", "Second"}
+    assert len(pending) == 2
+
+def test_flush_and_send_nothing_to_send_makes_no_request(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    core.buffer.clear()
+
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: calls.append(1))
+
+    core.flush_and_send()
+
+    assert calls == []
