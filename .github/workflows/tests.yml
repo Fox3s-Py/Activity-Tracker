@@ -63,10 +63,10 @@ jobs:
           python-version: "3.14"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: pytest tests/ -v --cov=app --cov-fail-under=95
 
   # client и bot не нуждаются в Postgres — отдельная задача без сервисов,
   # чтобы не тратить время на его поднятие там, где он не используется.
@@ -77,6 +77,13 @@ jobs:
       fail-fast: false
       matrix:
         package: [client, bot]
+        include:
+          - package: client
+            cov_module: core
+            cov_threshold: 90
+          - package: bot
+            cov_module: formatting
+            cov_threshold: 95
 
     defaults:
       run:
@@ -92,9 +99,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install dependencies
-        # pytest не прописан в requirements.txt client/bot — ставим отдельно
-        # тут же, до появления отдельного requirements-dev.txt (issue #19)
-        run: pip install -r requirements.txt pytest
+        run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: pytest tests/ -v --cov=${{ matrix.cov_module }} --cov-fail-under=${{ matrix.cov_threshold }}

@@ -30,54 +30,76 @@ PENDING_DB_FILE = Path("pending_events.db")
 
 
 def init_pending_db() -> None:
-    """Таблица-очередь: сюда падают события, которые не удалось отправить."""
-    with sqlite3.connect(PENDING_DB_FILE) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS pending_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                process_name TEXT NOT NULL,
-                window_title TEXT,
-                started_at TEXT NOT NULL,
-                ended_at TEXT NOT NULL,
-                duration_seconds REAL NOT NULL
+    """
+    Таблица-очередь: сюда падают события, которые не удалось отправить.
+
+    Соединение открывается и закрывается вручную (try/finally), а не через
+    `with sqlite3.connect(...) as conn:` — контекстный менеджер sqlite3.Connection
+    управляет только ТРАНЗАКЦИЕЙ (коммит/откат), а не самим соединением, в
+    отличие от большинства других контекстных менеджеров (например, open()).
+    Без явного close() соединение остаётся открытым до сборки мусора —
+    источник ResourceWarning "unclosed database" при активном создании
+    много соединений подряд (проявилось в тестах с частыми вызовами очереди).
+    """
+    conn = sqlite3.connect(PENDING_DB_FILE)
+    try:
+        with conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    process_name TEXT NOT NULL,
+                    window_title TEXT,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    duration_seconds REAL NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.commit()
+    finally:
+        conn.close()
 
 
 def save_pending(events: list[dict]) -> None:
     """Сохраняет события, которые не удалось отправить, в локальную очередь."""
     if not events:
         return
-    with sqlite3.connect(PENDING_DB_FILE) as conn:
-        conn.executemany(
-            """
-            INSERT INTO pending_events (process_name, window_title, started_at, ended_at, duration_seconds)
-            VALUES (:process_name, :window_title, :started_at, :ended_at, :duration_seconds)
-            """,
-            events,
-        )
-        conn.commit()
+    conn = sqlite3.connect(PENDING_DB_FILE)
+    try:
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO pending_events (process_name, window_title, started_at, ended_at, duration_seconds)
+                VALUES (:process_name, :window_title, :started_at, :ended_at, :duration_seconds)
+                """,
+                events,
+            )
+    finally:
+        conn.close()
 
 
 def load_pending() -> list[dict]:
     """Читает всё, что накопилось в очереди — вместе с id (нужен для удаления после отправки)."""
-    with sqlite3.connect(PENDING_DB_FILE) as conn:
+    conn = sqlite3.connect(PENDING_DB_FILE)
+    try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM pending_events").fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
 
 
 def clear_pending(ids: list[int]) -> None:
     """Удаляет успешно отправленные события из очереди по их id."""
     if not ids:
         return
-    with sqlite3.connect(PENDING_DB_FILE) as conn:
-        placeholders = ",".join("?" * len(ids))
-        conn.execute(f"DELETE FROM pending_events WHERE id IN ({placeholders})", ids)
-        conn.commit()
+    conn = sqlite3.connect(PENDING_DB_FILE)
+    try:
+        with conn:
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(f"DELETE FROM pending_events WHERE id IN ({placeholders})", ids)
+    finally:
+        conn.close()
 
 
 def strip_id(events: list[dict]) -> list[dict]:
