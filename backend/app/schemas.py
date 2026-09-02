@@ -58,6 +58,20 @@ class ActivityIn(BaseModel):
             raise ValueError("ended_at не может быть раньше started_at")
         return self
 
+    # Допуск в 1 секунду — клиент округляет duration_seconds до одного
+    # знака после запятой (round(duration, 1) в close_interval), точное
+    # совпадение отклоняло бы легитимные события из-за обычного округления.
+    DURATION_TOLERANCE_SECONDS: ClassVar[float] = 1.0
+
+    @model_validator(mode="after")
+    def duration_matches_interval(self):
+        expected = (self.ended_at - self.started_at).total_seconds()
+        if abs(self.duration_seconds - expected) > self.DURATION_TOLERANCE_SECONDS:
+            raise ValueError(
+                "duration_seconds не сходится с интервалом started_at..ended_at"
+            )
+        return self
+
 
 class ActivityBatchIn(BaseModel):
     """Пачка интервалов — то, что реально шлёт клиент раз в N минут."""
