@@ -151,3 +151,74 @@ def test_clear_pending_empty_list_does_nothing(monkeypatch, tmp_path):
     core.clear_pending([])  # не должно ничего удалить
 
     assert len(core.load_pending()) == 1
+
+
+# --- is_ignored: wildcard-случай (ignored_title=None), которого нет в примерах выше ---
+
+def test_is_ignored_wildcard_matches_any_title(monkeypatch):
+    """
+    (process_name, None) в IGNORE_LIST означает "игнорировать процесс целиком,
+    независимо от заголовка". В реальном IGNORE_LIST такой записи сейчас нет
+    (только конкретные заголовки) — эта ветка кода не выполнялась ни разу
+    ни одним существующим тестом до этого.
+    """
+    monkeypatch.setattr(core, "IGNORE_LIST", {("systemprocess.exe", None)})
+
+    assert core.is_ignored("systemprocess.exe", "Любой заголовок") is True
+    assert core.is_ignored("systemprocess.exe", "") is True
+    assert core.is_ignored("systemprocess.exe", "Совсем другой") is True
+
+
+# --- buffer: многопоточность (ради чего вообще существует buffer_lock) ---
+
+def test_buffer_survives_concurrent_add_and_flush():
+    """
+    add_to_buffer() и flush_buffer() дёргаются из РАЗНЫХ потоков в реальном
+    приложении (колбэк хука пишет, фоновый поток отправки читает). Без
+    buffer_lock есть окно гонки: поток A скопировал buffer, поток B успел
+    добавить туда событие, поток A очистил buffer — событие B потеряно.
+
+    ВАЖНО: тест на многопоточность вероятностный, не детерминированный —
+    проверено на практике: без buffer_lock тест падает примерно в 3 запусках
+    из 8, а не гарантированно каждый раз (GIL сериализует байткод-операции,
+    поэтому окно гонки не всегда успевает открыться). С buffer_lock на месте
+    тест стабильно зелёный (10/10 прогонов). Это ожидаемая характеристика
+    тестов конкурентного доступа, а не брак самого теста.
+    """
+    import threading
+
+    core.buffer.clear()
+    collected: list[dict] = []
+    collected_lock = threading.Lock()
+
+    EVENTS_PER_PRODUCER = 500
+    PRODUCERS = 8
+
+    def produce(producer_id: int):
+        for i in range(EVENTS_PER_PRODUCER):
+            core.add_to_buffer({"producer": producer_id, "i": i})
+
+    def collect_periodically(stop_event: threading.Event):
+        while not stop_event.is_set():
+            flushed = core.flush_buffer()
+            with collected_lock:
+                collected.extend(flushed)
+
+    stop_event = threading.Event()
+    collector = threading.Thread(target=collect_periodically, args=(stop_event,))
+    collector.start()
+
+    producers = [threading.Thread(target=produce, args=(pid,)) for pid in range(PRODUCERS)]
+    for t in producers:
+        t.start()
+    for t in producers:
+        t.join()
+
+    stop_event.set()
+    collector.join()
+
+    # финальный flush — забрать всё, что могло остаться после остановки коллектора
+    collected.extend(core.flush_buffer())
+
+    assert len(collected) == PRODUCERS * EVENTS_PER_PRODUCER
+

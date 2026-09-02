@@ -29,12 +29,12 @@ from ctypes import wintypes
 from datetime import datetime
 
 import psutil
-import requests
 import win32gui
 from dotenv import load_dotenv
 
 from core import (
     PENDING_DB_FILE,
+    API_URL,
     is_ignored,
     strip_id,
     add_to_buffer,
@@ -43,18 +43,16 @@ from core import (
     save_pending,
     load_pending,
     clear_pending,
+    login,
+    send_batch,
+    flush_and_send,
 )
 
 load_dotenv()
 
 # --- Конфиг ---
 
-API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
-TRACKER_USERNAME = os.getenv("TRACKER_USERNAME")
-TRACKER_PASSWORD = os.getenv("TRACKER_PASSWORD")
-
 SEND_INTERVAL_SECONDS = 300  # как часто пытаться отправить накопленное
-REQUEST_TIMEOUT_SECONDS = 5
 
 # --- WinAPI константы ---
 
@@ -84,101 +82,6 @@ WinEventProcType = ctypes.WINFUNCTYPE(
 current_window: tuple[str, str] | None = None
 current_started_at: datetime | None = None
 current_hwnd: int | None = None
-
-# --- Аутентификация ---
-
-_current_token: str | None = None
-
-
-def login() -> str | None:
-    """Логинится на бэкенде, сохраняет токен в памяти. Возвращает токен или None при неудаче."""
-    global _current_token
-
-    if not TRACKER_USERNAME or not TRACKER_PASSWORD:
-        print("TRACKER_USERNAME/TRACKER_PASSWORD не заданы в .env — не могу залогиниться")
-        return None
-
-    try:
-        response = requests.post(
-            f"{API_URL}/auth/login",
-            data={"username": TRACKER_USERNAME, "password": TRACKER_PASSWORD},
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        _current_token = response.json()["access_token"]
-        print("Успешный логин на бэкенде")
-        return _current_token
-    except requests.exceptions.RequestException as e:
-        print(f"Не удалось залогиниться ({e.__class__.__name__})")
-        return None
-
-
-# --- Отправка на бэкенд ---
-
-def send_batch(events: list[dict]) -> bool:
-    """
-    Пытается отправить пачку событий на бэкенд. Возвращает True при успехе.
-    events — словари БЕЗ ключа "id" (это чисто SQLite-специфика, бэкенду не нужен).
-
-    Логинится при первой необходимости (если токена ещё нет). Если сервер
-    отклонит токен (401 — истёк или сброшен) — логинится заново и повторяет
-    отправку один раз, прежде чем сдаться.
-    """
-    global _current_token
-
-    if not events:
-        return True
-
-    if _current_token is None and login() is None:
-        return False  # даже залогиниться не смогли — сеть точно недоступна
-
-    def _post() -> requests.Response:
-        headers = {"Authorization": f"Bearer {_current_token}"}
-        return requests.post(
-            f"{API_URL}/activities/batch",
-            json={"events": events},
-            headers=headers,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-
-    try:
-        response = _post()
-
-        if response.status_code == 401:
-            print("Токен не принят (401), логинюсь заново")
-            if login() is None:
-                return False
-            response = _post()
-
-        response.raise_for_status()
-        print(f"Отправлено {len(events)} интервалов на сервер")
-        return True
-    except requests.exceptions.RequestException as e:
-        print(f"Не удалось отправить на сервер ({e.__class__.__name__}), сохраняю локально")
-        return False
-
-
-def flush_and_send() -> None:
-    """
-    Полный цикл одной попытки отправки:
-    забрать буфер + то, что скопилось в очереди -> отправить -> почистить успешное.
-    """
-    current_events = flush_buffer()
-    pending_events = load_pending()
-
-    all_events = strip_id(pending_events) + current_events
-
-    if not all_events:
-        return
-
-    if send_batch(all_events):
-        # успех — очищаем и буфер (уже забрали выше), и старую очередь целиком
-        pending_ids = [e["id"] for e in pending_events]
-        clear_pending(pending_ids)
-    else:
-        # не получилось — сохраняем то, что было в буфере, в очередь
-        # (то, что уже лежало в pending_events, там и остаётся, не трогаем)
-        save_pending(current_events)
 
 
 def send_periodically() -> None:
