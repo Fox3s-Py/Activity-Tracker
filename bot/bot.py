@@ -24,6 +24,9 @@ from formatting import (
     period_date_range,
     format_duration,
     safe_callback_data,
+    reset_site_registry,
+    register_site_name,
+    resolve_site_name,
 )
 
 load_dotenv()
@@ -338,11 +341,13 @@ async def breakdown_handler(callback: CallbackQuery):
         return
 
     builder = InlineKeyboardBuilder()
+    reset_site_registry(chat_id)
     for item in breakdown[:10]:
         button_text = f"{item['name']} — {format_duration(item['total_seconds'])}"
+        site_key = register_site_name(chat_id, item["name"])
         builder.button(
             text=button_text,
-            callback_data=safe_callback_data("title", period_code, process_name, item["name"]),
+            callback_data=safe_callback_data("title", period_code, process_name, site_key),
         )
     builder.adjust(1)
 
@@ -358,11 +363,20 @@ async def breakdown_handler(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("title:"))
 async def title_handler(callback: CallbackQuery):
-    _, period_code, process_name, site = callback.data.split(":", 3)  # type: ignore
+    _, period_code, process_name, site_key = callback.data.split(":", 3)  # type: ignore
     chat_id = callback.message.chat.id  # type: ignore
     telegram_id = get_telegram_id(callback)
     if telegram_id is None:
         return
+
+    site = resolve_site_name(chat_id, site_key)
+    if site is None:
+        # реестр пуст (бот перезапускался) или это кнопка из уже неактуального
+        # набора (запрашивали статистику заново, старые ключи затёрты) —
+        # понятная ошибка вместо похода в API с site=None
+        await callback.answer("Кнопка устарела, запроси статистику заново.", show_alert=True)
+        return
+
     date_from, date_to = period_date_range(period_code)
 
     response = authenticated_request(

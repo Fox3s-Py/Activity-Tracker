@@ -7,6 +7,9 @@ from formatting import (
     format_duration,
     period_date_range,
     safe_callback_data,
+    reset_site_registry,
+    register_site_name,
+    resolve_site_name,
 )
 
 
@@ -103,3 +106,48 @@ def test_safe_callback_data_truncation_changes_value():
 
     truncated_site_name = result.split(":", 3)[3]
     assert truncated_site_name != original_site_name  # ЗНАЧЕНИЕ изменилось — источник бага
+
+
+# --- site name registry (issue #16) ---
+
+def test_register_and_resolve_site_name():
+    reset_site_registry(chat_id=1)
+    key = register_site_name(1, "Выжившие работяги за 2026 год")
+
+    assert resolve_site_name(1, key) == "Выжившие работяги за 2026 год"
+
+
+def test_register_returns_sequential_keys():
+    reset_site_registry(chat_id=2)
+    key1 = register_site_name(2, "GitHub")
+    key2 = register_site_name(2, "YouTube")
+
+    assert key1 == "0"
+    assert key2 == "1"
+
+
+def test_registry_isolated_between_chats():
+    reset_site_registry(chat_id=10)
+    reset_site_registry(chat_id=20)
+    key = register_site_name(10, "Секретный сайт чата 10")
+
+    assert resolve_site_name(20, key) is None
+
+
+def test_resolve_unknown_key_returns_none():
+    reset_site_registry(chat_id=3)
+
+    assert resolve_site_name(3, "nonexistent") is None
+
+
+def test_resolve_unknown_chat_returns_none():
+    assert resolve_site_name(99999, "0") is None
+
+
+def test_reset_clears_previous_registrations():
+    reset_site_registry(chat_id=4)
+    key = register_site_name(4, "Старое название")
+
+    reset_site_registry(chat_id=4)
+
+    assert resolve_site_name(4, key) is None
