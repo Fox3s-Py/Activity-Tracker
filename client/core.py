@@ -23,6 +23,10 @@ API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 TRACKER_USERNAME = os.getenv("TRACKER_USERNAME")
 TRACKER_PASSWORD = os.getenv("TRACKER_PASSWORD")
 REQUEST_TIMEOUT_SECONDS = 5
+# Сервер принимает до 1000 событий за запрос (ActivityBatchIn.max_length,
+# issue #21) — берём с запасом, а не впритык к потолку: если backend
+# когда-нибудь снизит лимит, клиент не застрянет снова.
+BATCH_LIMIT = 500
 
 # --- Локальная SQLite-очередь неотправленного ---
 
@@ -78,12 +82,33 @@ def save_pending(events: list[dict]) -> None:
         conn.close()
 
 
-def load_pending() -> list[dict]:
-    """Читает всё, что накопилось в очереди — вместе с id (нужен для удаления после отправки)."""
+def load_pending(limit: int | None = None) -> list[dict]:
+    """
+    Читает то, что накопилось в очереди — вместе с id (нужен для удаления
+    после отправки). Всегда по возрастанию id (старые события первыми) —
+    важно для отправки порциями в правильном порядке, не вперемешку.
+
+    limit — необязательный параметр, НЕ значение по умолчанию, привязанное
+    к константе (см. обсуждение ловушки: значения по умолчанию Python
+    вычисляет один раз при определении функции, а не при каждом вызове —
+    monkeypatch на константу тогда перестал бы работать в тестах).
+    Без limit — всё как раньше, старое поведение не меняется.
+
+    ORDER BY id — гарантия порядка, а не подстраховка "на всякий случай".
+    Проверено: без ORDER BY тесты на порядок остаются зелёными (SQLite в
+    этой версии на практике и так возвращает строки в порядке вставки),
+    но это деталь реализации, не контракт языка/СУБД — полагаться на неё
+    без ORDER BY было бы риском, который тест не способен обнаружить.
+    """
     conn = sqlite3.connect(PENDING_DB_FILE)
     try:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM pending_events").fetchall()
+        query = "SELECT * FROM pending_events ORDER BY id"
+        params: tuple = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (limit,)
+        rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
     finally:
         conn.close()
@@ -223,22 +248,31 @@ def send_batch(events: list[dict]) -> bool:
 
 def flush_and_send() -> None:
     """
-    Полный цикл одной попытки отправки:
-    забрать буфер + то, что скопилось в очереди -> отправить -> почистить успешное.
+    Отправляет накопленное порциями по BATCH_LIMIT штук, пока очередь не
+    опустеет или отправка не даст сбой.
+
+    Буфер сразу сохраняется на диск (save_pending) — дальше вся функция
+    работает с ОДНИМ источником (сама очередь), а не пытается по-разному
+    обращаться с "тем, что из буфера" и "тем, что уже на диске". Это
+    убирает целый класс возможных ошибок (перепутать, что откуда пришло),
+    ценой одной лишней короткой записи на диск при каждом вызове.
+
+    Останавливается на первой неудаче, не пытаясь пробить оставшиеся
+    порции в этом же вызове — то, что не отправилось, и так уже лежит на
+    диске (все события в очереди появляются там ДО попытки отправки),
+    следующая попытка будет через SEND_INTERVAL_SECONDS, как обычно.
     """
-    current_events = flush_buffer()
-    pending_events = load_pending()
+    save_pending(flush_buffer())
 
-    all_events = strip_id(pending_events) + current_events
+    chunks_sent = 0
+    while True:
+        chunk = load_pending(limit=BATCH_LIMIT)
+        if not chunk:
+            break
+        if not send_batch(strip_id(chunk)):
+            break  # всё неотправленное уже на диске, ничего досохранять не нужно
+        clear_pending([e["id"] for e in chunk])
+        chunks_sent += 1
 
-    if not all_events:
-        return
-
-    if send_batch(all_events):
-        # успех — очищаем и буфер (уже забрали выше), и старую очередь целиком
-        pending_ids = [e["id"] for e in pending_events]
-        clear_pending(pending_ids)
-    else:
-        # не получилось — сохраняем то, что было в буфере, в очередь
-        # (то, что уже лежало в pending_events, там и остаётся, не трогаем)
-        save_pending(current_events)
+    if chunks_sent > 1:
+        print(f"Очередь была большой: отправлено {chunks_sent} порций")

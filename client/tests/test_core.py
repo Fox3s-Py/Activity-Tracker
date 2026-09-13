@@ -388,3 +388,221 @@ def test_flush_and_send_nothing_to_send_makes_no_request(monkeypatch, tmp_path):
     core.flush_and_send()
 
     assert calls == []
+
+def test_load_pending_with_limit_returns_oldest_first(monkeypatch, tmp_path):
+    """С limit — только столько строк, самых старых (по id), не любых."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test_pending.db")
+    core.init_pending_db()
+
+    core.save_pending([
+        {"process_name": "first.exe", "window_title": "A", "started_at": "2026-09-01T10:00:00",
+         "ended_at": "2026-09-01T10:01:00", "duration_seconds": 60.0},
+        {"process_name": "second.exe", "window_title": "B", "started_at": "2026-09-01T11:00:00",
+         "ended_at": "2026-09-01T11:01:00", "duration_seconds": 60.0},
+        {"process_name": "third.exe", "window_title": "C", "started_at": "2026-09-01T12:00:00",
+         "ended_at": "2026-09-01T12:01:00", "duration_seconds": 60.0},
+    ])
+
+    chunk = core.load_pending(limit=2)
+
+    assert len(chunk) == 2
+    assert [e["process_name"] for e in chunk] == ["first.exe", "second.exe"]
+
+
+def test_load_pending_without_limit_returns_all(monkeypatch, tmp_path):
+    """Старое поведение не сломано — без limit отдаёт всё, как и раньше."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test_pending.db")
+    core.init_pending_db()
+
+    core.save_pending([
+        {"process_name": "first.exe", "window_title": "A", "started_at": "2026-09-01T10:00:00",
+         "ended_at": "2026-09-01T10:01:00", "duration_seconds": 60.0},
+        {"process_name": "second.exe", "window_title": "B", "started_at": "2026-09-01T11:00:00",
+         "ended_at": "2026-09-01T11:01:00", "duration_seconds": 60.0},
+    ])
+
+    assert len(core.load_pending()) == 2
+
+
+# --- flush_and_send порциями (issue #23) ---
+#
+# Тесты написаны ДО переписывания flush_and_send — намеренно, чтобы
+# убедиться, что они реально проверяют поведение "отправка по кусочкам",
+# а не просто существуют для галочки. Сценарий с несколькими порциями
+# должен упасть на СТАРОМ коде (он шлёт всё одним запросом) — это и
+# доказывает, что тест что-то ловит.
+
+def make_fake_send(results):
+    """
+    Подменяет send_batch: не стучится в сеть, а по очереди отдаёт заранее
+    заготовленные ответы (True/False) и запоминает размер каждого вызова —
+    чтобы потом проверить, что события резались на порции правильного
+    размера, а не ушли одним огромным списком.
+    """
+    calls = []
+    answers = iter(results)
+
+    def fake(events):
+        calls.append(len(events))
+        return next(answers)
+
+    return fake, calls
+
+
+def test_flush_and_send_splits_into_chunks(monkeypatch, tmp_path):
+    """4 события при BATCH_LIMIT=3 -> два запроса: [3, 1], не один [4]."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    monkeypatch.setattr(core, "BATCH_LIMIT", 3)
+
+    for i in range(4):
+        core.save_pending([{
+            "process_name": f"proc{i}.exe", "window_title": "X",
+            "started_at": "2026-09-01T10:00:00", "ended_at": "2026-09-01T10:01:00",
+            "duration_seconds": 60.0,
+        }])
+
+    fake_send, calls = make_fake_send([True, True])
+    monkeypatch.setattr(core, "send_batch", fake_send)
+
+    core.flush_and_send()
+
+    assert calls == [3, 1]
+
+
+def test_flush_and_send_empty_makes_no_calls(monkeypatch, tmp_path):
+    """Сценарий 1: пусто и на диске, и в буфере -> ни одного вызова send_batch."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    core.buffer.clear()
+    monkeypatch.setattr(core, "BATCH_LIMIT", 3)
+
+    fake_send, calls = make_fake_send([])
+    monkeypatch.setattr(core, "send_batch", fake_send)
+
+    core.flush_and_send()
+
+    assert calls == []
+
+
+def test_flush_and_send_exact_limit_single_chunk(monkeypatch, tmp_path):
+    """Сценарий 2: ровно 3 события при BATCH_LIMIT=3 -> один вызов [3], без лишней пустой порции."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    monkeypatch.setattr(core, "BATCH_LIMIT", 3)
+
+    for i in range(3):
+        core.save_pending([{
+            "process_name": f"proc{i}.exe", "window_title": "X",
+            "started_at": "2026-09-01T10:00:00", "ended_at": "2026-09-01T10:01:00",
+            "duration_seconds": 60.0,
+        }])
+
+    fake_send, calls = make_fake_send([True])
+    monkeypatch.setattr(core, "send_batch", fake_send)
+
+    core.flush_and_send()
+
+    assert calls == [3]
+
+
+def test_flush_and_send_all_success_empties_queue(monkeypatch, tmp_path):
+    """Сценарий 4: успех на всех порциях -> очередь пуста."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    monkeypatch.setattr(core, "BATCH_LIMIT", 3)
+
+    for i in range(4):
+        core.save_pending([{
+            "process_name": f"proc{i}.exe", "window_title": "X",
+            "started_at": "2026-09-01T10:00:00", "ended_at": "2026-09-01T10:01:00",
+            "duration_seconds": 60.0,
+        }])
+
+    fake_send, calls = make_fake_send([True, True])
+    monkeypatch.setattr(core, "send_batch", fake_send)
+
+    core.flush_and_send()
+
+    assert core.load_pending() == []
+
+
+def test_flush_and_send_partial_success_keeps_remainder(monkeypatch, tmp_path):
+    """Сценарий 5: первая порция успешна, вторая нет -> первая удалена, остальное на диске."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    monkeypatch.setattr(core, "BATCH_LIMIT", 3)
+
+    for i in range(4):
+        core.save_pending([{
+            "process_name": f"proc{i}.exe", "window_title": "X",
+            "started_at": "2026-09-01T10:00:00", "ended_at": "2026-09-01T10:01:00",
+            "duration_seconds": 60.0,
+        }])
+
+    fake_send, calls = make_fake_send([True, False])
+    monkeypatch.setattr(core, "send_batch", fake_send)
+
+    core.flush_and_send()
+
+    remaining = core.load_pending()
+    assert len(remaining) == 1
+    assert remaining[0]["process_name"] == "proc3.exe"  # четвёртое, не вошедшее в первую порцию
+
+
+def test_flush_and_send_immediate_failure_keeps_everything_on_disk(monkeypatch, tmp_path):
+    """Сценарий 6: неудача сразу -> на диске всё, включая только что пришедший буфер."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    monkeypatch.setattr(core, "BATCH_LIMIT", 3)
+
+    core.save_pending([{
+        "process_name": "old.exe", "window_title": "X",
+        "started_at": "2026-09-01T09:00:00", "ended_at": "2026-09-01T09:01:00",
+        "duration_seconds": 60.0,
+    }])
+    core.buffer.clear()
+    core.add_to_buffer({
+        "process_name": "fresh.exe", "window_title": "Y",
+        "started_at": "2026-09-01T10:00:00", "ended_at": "2026-09-01T10:01:00",
+        "duration_seconds": 60.0,
+    })
+
+    fake_send, calls = make_fake_send([False])
+    monkeypatch.setattr(core, "send_batch", fake_send)
+
+    core.flush_and_send()
+
+    names = {e["process_name"] for e in core.load_pending()}
+    assert names == {"old.exe", "fresh.exe"}
+
+
+def test_flush_and_send_sends_old_events_before_fresh_buffer(monkeypatch, tmp_path):
+    """Сценарий 7: старые события из прошлой очереди уходят раньше свежего буфера."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test.db")
+    core.init_pending_db()
+    monkeypatch.setattr(core, "BATCH_LIMIT", 10)  # достаточно, чтобы обе записи попали в один запрос
+
+    core.save_pending([{
+        "process_name": "old.exe", "window_title": "X",
+        "started_at": "2026-09-01T09:00:00", "ended_at": "2026-09-01T09:01:00",
+        "duration_seconds": 60.0,
+    }])
+    core.buffer.clear()
+    core.add_to_buffer({
+        "process_name": "fresh.exe", "window_title": "Y",
+        "started_at": "2026-09-01T10:00:00", "ended_at": "2026-09-01T10:01:00",
+        "duration_seconds": 60.0,
+    })
+
+    sent_order = []
+
+    def fake_send_capture(events):
+        sent_order.append([e["process_name"] for e in events])
+        return True
+
+    monkeypatch.setattr(core, "send_batch", fake_send_capture)
+
+    core.flush_and_send()
+
+    assert sent_order == [["old.exe", "fresh.exe"]]
