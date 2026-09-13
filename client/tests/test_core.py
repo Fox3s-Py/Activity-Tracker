@@ -388,3 +388,37 @@ def test_flush_and_send_nothing_to_send_makes_no_request(monkeypatch, tmp_path):
     core.flush_and_send()
 
     assert calls == []
+
+def test_load_pending_with_limit_returns_oldest_first(monkeypatch, tmp_path):
+    """С limit — только столько строк, самых старых (по id), не любых."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test_pending.db")
+    core.init_pending_db()
+
+    core.save_pending([
+        {"process_name": "first.exe", "window_title": "A", "started_at": "2026-09-01T10:00:00",
+         "ended_at": "2026-09-01T10:01:00", "duration_seconds": 60.0},
+        {"process_name": "second.exe", "window_title": "B", "started_at": "2026-09-01T11:00:00",
+         "ended_at": "2026-09-01T11:01:00", "duration_seconds": 60.0},
+        {"process_name": "third.exe", "window_title": "C", "started_at": "2026-09-01T12:00:00",
+         "ended_at": "2026-09-01T12:01:00", "duration_seconds": 60.0},
+    ])
+
+    chunk = core.load_pending(limit=2)
+
+    assert len(chunk) == 2
+    assert [e["process_name"] for e in chunk] == ["first.exe", "second.exe"]
+
+
+def test_load_pending_without_limit_returns_all(monkeypatch, tmp_path):
+    """Старое поведение не сломано — без limit отдаёт всё, как и раньше."""
+    monkeypatch.setattr(core, "PENDING_DB_FILE", tmp_path / "test_pending.db")
+    core.init_pending_db()
+
+    core.save_pending([
+        {"process_name": "first.exe", "window_title": "A", "started_at": "2026-09-01T10:00:00",
+         "ended_at": "2026-09-01T10:01:00", "duration_seconds": 60.0},
+        {"process_name": "second.exe", "window_title": "B", "started_at": "2026-09-01T11:00:00",
+         "ended_at": "2026-09-01T11:01:00", "duration_seconds": 60.0},
+    ])
+
+    assert len(core.load_pending()) == 2

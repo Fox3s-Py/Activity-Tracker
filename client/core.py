@@ -78,12 +78,27 @@ def save_pending(events: list[dict]) -> None:
         conn.close()
 
 
-def load_pending() -> list[dict]:
-    """Читает всё, что накопилось в очереди — вместе с id (нужен для удаления после отправки)."""
+def load_pending(limit: int | None = None) -> list[dict]:
+    """
+    Читает то, что накопилось в очереди — вместе с id (нужен для удаления
+    после отправки). Всегда по возрастанию id (старые события первыми) —
+    важно для отправки порциями в правильном порядке, не вперемешку.
+
+    limit — необязательный параметр, НЕ значение по умолчанию, привязанное
+    к константе (см. обсуждение ловушки: значения по умолчанию Python
+    вычисляет один раз при определении функции, а не при каждом вызове —
+    monkeypatch на константу тогда перестал бы работать в тестах).
+    Без limit — всё как раньше, старое поведение не меняется.
+    """
     conn = sqlite3.connect(PENDING_DB_FILE)
     try:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM pending_events").fetchall()
+        query = "SELECT * FROM pending_events ORDER BY id"
+        params: tuple = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (limit,)
+        rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
     finally:
         conn.close()
