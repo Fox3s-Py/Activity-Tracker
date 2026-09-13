@@ -249,3 +249,26 @@ def test_create_activities_batch_accepts_exactly_1000_events(client, auth_header
 
     assert response.status_code == 200
     assert response.json() == {"inserted": 1000}
+
+def test_strip_nul_bytes_removes_nul_characters():
+    """
+    Прямой юнит-тест на саму функцию (issue #9) — проверяет код, а не
+    поведение БД. В отличие от test_create_activities_batch_strips_nul_bytes
+    выше (через API/SQLite), этот тест ловит регрессию в strip_nul_bytes()
+    независимо от того, какая СУБД используется в тестовом окружении.
+    """
+    from app.schemas import strip_nul_bytes
+
+    assert strip_nul_bytes("Битый\x00заголовок") == "Битыйзаголовок"
+
+
+def test_strip_nul_bytes_handles_none():
+    from app.schemas import strip_nul_bytes
+
+    assert strip_nul_bytes(None) is None
+
+
+def test_strip_nul_bytes_leaves_clean_string_untouched():
+    from app.schemas import strip_nul_bytes
+
+    assert strip_nul_bytes("Обычный заголовок") == "Обычный заголовок"
